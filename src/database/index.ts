@@ -72,7 +72,11 @@ class DatabaseService {
     } = {}
   ): Promise<{ records: ContractMetadata[]; total: number; page: number; limit: number }> {
     const db = await this.loadDatabase();
+    const MAX_LIMIT = 100;
     const { page = 1, limit = 20, key, data_type, includeDeleted = false } = options;
+    
+    // Bound limit
+    const boundedLimit = Math.min(Math.max(1, limit), MAX_LIMIT);
 
     let filtered = db.contract_metadata.filter(record => {
       if (record.contract_id !== contractId) return false;
@@ -82,12 +86,21 @@ class DatabaseService {
       return true;
     });
 
-    const total = filtered.length;
-    const startIndex = (page - 1) * limit;
-    const records = filtered.slice(startIndex, startIndex + limit);
+    // Stable sorting: latest first, then by ID for absolute stability
+    filtered.sort((a, b) => {
+      const dateA = new Date(a.created_at).getTime();
+      const dateB = new Date(b.created_at).getTime();
+      if (dateB !== dateA) return dateB - dateA;
+      return a.id.localeCompare(b.id);
+    });
 
-    return { records, total, page, limit };
+    const total = filtered.length;
+    const startIndex = (page - 1) * boundedLimit;
+    const records = filtered.slice(startIndex, startIndex + boundedLimit);
+
+    return { records, total, page, limit: boundedLimit };
   }
+
 
   async getContractMetadataById(id: string): Promise<ContractMetadata | null> {
     const db = await this.loadDatabase();
