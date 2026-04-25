@@ -63,6 +63,13 @@ export const envSchema = z.object({
 
   
   SOROBAN_CONTRACT_ID: z.string().optional(),
+  
+  STELLAR_RPC_URL: z.string().url()
+    .refine(val => isSafeUrl(val), {
+      message: "STELLAR_RPC_URL must be a public URL and cannot point to internal resources (SSRF protection)"
+    })
+    .default('https://rpc-testnet.stellar.org'),
+
 
   // Router / Blue-Green Deployment Configuration
   ACTIVE_COLOR: z.enum(['blue', 'green']).default('blue'),

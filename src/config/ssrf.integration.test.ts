@@ -21,11 +21,22 @@ describe('envSchema SSRF Protection', () => {
     }
   });
 
+  it('should reject private URLs in STELLAR_RPC_URL', () => {
+    const result = envSchema.safeParse({
+      STELLAR_RPC_URL: 'http://169.254.169.254/latest/meta-data/'
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.errors[0].message).toContain('SSRF protection');
+    }
+  });
+
   it('should allow public URLs', () => {
     const result = envSchema.safeParse({
       API_BASE_URL: 'https://api.talenttrust.io',
       STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-      SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org'
+      SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
+      STELLAR_RPC_URL: 'https://rpc-testnet.stellar.org'
     });
     expect(result.success).toBe(true);
   });
