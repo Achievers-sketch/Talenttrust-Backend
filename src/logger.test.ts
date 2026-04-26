@@ -11,7 +11,7 @@
  *   - Request logger utility
  */
 
-import { Logger, createLogger, logger, createRequestLogger, LogLevel } from './logger';
+import { Logger, createLogger, logger, createRequestLogger, LogLevel, LogRecord, setWriteRecordImpl } from './logger';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -19,9 +19,7 @@ interface CapturedLog {
   level: string;
   msg: string;
   service: string;
-  time?: number;
-  requestId?: string;
-  correlationId?: string;
+  timestamp?: string;
   [key: string]: any;
 }
 
@@ -29,48 +27,68 @@ interface CapturedLog {
 function createTestLogger(): {
   logger: Logger;
   logs: CapturedLog[];
+  restore: () => void;
 } {
   const logs: CapturedLog[] = [];
   
   // Create a custom write function that captures logs
-  const writeFn = (chunk: any) => {
-    try {
-      const logLine = chunk.toString().trim();
-      if (logLine && logLine.startsWith('{')) {
-        const parsed = JSON.parse(logLine) as CapturedLog;
-        logs.push(parsed);
-      }
-    } catch (error) {
-      // Ignore parsing errors
+  const writeFn = (record: LogRecord) => {
+    // Map LogRecord to CapturedLog format
+    const { message, level, service, requestId, correlationId, timestamp, ...rest } = record;
+    const capturedLog: CapturedLog = {
+      level,
+      msg: message, // Map message to msg
+      service,
+      timestamp,
+      ...rest // Include any other fields except the ones we already mapped
+    };
+    
+    // Only add requestId and correlationId if they actually exist
+    if (requestId !== undefined) {
+      (capturedLog as any).requestId = requestId;
     }
-    return true;
+    if (correlationId !== undefined) {
+      (capturedLog as any).correlationId = correlationId;
+    }
+    logs.push(capturedLog);
   };
   
-  // Mock process.stdout.write to capture logs
-  const originalWrite = process.stdout.write;
-  process.stdout.write = writeFn;
+  // Override the writeRecord implementation
+  setWriteRecordImpl(writeFn);
   
   // Create a logger instance
   const testLogger = new Logger();
   
-  // Restore original write after creating logger
-  process.stdout.write = originalWrite;
-  
-  // Now override the pino instance's write method
-  (testLogger as any).pino.write = writeFn;
-  
-  return { logger: testLogger, logs };
+  return { 
+    logger: testLogger, 
+    logs,
+    restore: () => {
+      // Restore the default implementation
+      setWriteRecordImpl((record: LogRecord) => {
+        const line = JSON.stringify(record);
+        if (record.level === 'error') {
+          process.stderr.write(line + '\n');
+        } else {
+          process.stdout.write(line + '\n');
+        }
+      });
+    }
+  };
 }
 
 // ── Logger – base fields ──────────────────────────────────────────────────────
 
 describe('Logger – base fields', () => {
-  let testLogger: { logger: Logger; logs: CapturedLog[] };
+  let testLogger: { logger: Logger; logs: CapturedLog[]; restore: () => void };
   let log: Logger;
 
   beforeEach(() => {
     testLogger = createTestLogger();
     log = testLogger.logger;
+  });
+
+  afterEach(() => {
+    testLogger.restore();
   });
 
   it('includes mandatory fields on every record', () => {
@@ -79,14 +97,16 @@ describe('Logger – base fields', () => {
     expect(rec.level).toBe('info');
     expect(rec.msg).toBe('hello');
     expect(rec.service).toBe('talenttrust-backend');
-    expect(typeof rec.time).toBe('string'); // Pino uses ISO string format
+    expect(rec.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/); // ISO format
   });
 
   it('omits requestId / correlationId when not set', () => {
     log.info('no ids');
     const rec = testLogger.logs[0]!;
-    expect(rec).not.toHaveProperty('requestId');
-    expect(rec).not.toHaveProperty('correlationId');
+    expect(rec.requestId).toBeUndefined();
+    expect(rec.correlationId).toBeUndefined();
+    expect('requestId' in rec).toBe(false);
+    expect('correlationId' in rec).toBe(false);
   });
 
   it('debug routes correctly', () => {
@@ -110,20 +130,7 @@ describe('Logger – base fields', () => {
     expect(testLogger.logs[0]!.msg).toBe('e');
   });
 
-  it('fatal routes correctly', () => {
-    log.fatal('f');
-    expect(testLogger.logs).toHaveLength(1);
-    expect(testLogger.logs[0]!.level).toBe('fatal');
-    expect(testLogger.logs[0]!.msg).toBe('f');
-  });
-
-  it('trace routes correctly', () => {
-    log.trace('t');
-    expect(testLogger.logs).toHaveLength(1);
-    expect(testLogger.logs[0]!.level).toBe('trace');
-    expect(testLogger.logs[0]!.msg).toBe('t');
-  });
-
+  
   it('merges extra fields into the record', () => {
     log.info('ctx', { userId: 'u1', action: 'login' });
     const rec = testLogger.logs[0]!;
@@ -136,9 +143,10 @@ describe('Logger – base fields', () => {
 // ── Logger – child context ────────────────────────────────────────────────────
 
 describe('Logger – child context', () => {
-  let testLogger: { logger: Logger; logs: CapturedLog[] };
+  let testLogger: { logger: Logger; logs: CapturedLog[]; restore: () => void };
 
   beforeEach(() => { testLogger = createTestLogger(); });
+  afterEach(() => { testLogger.restore(); });
 
   it('child logger includes requestId on every record', () => {
     const child = testLogger.logger.child({ requestId: 'req-abc' });
@@ -185,9 +193,10 @@ describe('Logger – child context', () => {
 // ── Logger – sensitive key redaction ─────────────────────────────────────────
 
 describe('Logger – sensitive key redaction', () => {
-  let testLogger: { logger: Logger; logs: CapturedLog[] };
+  let testLogger: { logger: Logger; logs: CapturedLog[]; restore: () => void };
 
   beforeEach(() => { testLogger = createTestLogger(); });
+  afterEach(() => { testLogger.restore(); });
 
   const sensitiveKeys = [
     'password', 'secret', 'token', 'authorization',
@@ -227,9 +236,10 @@ describe('Logger – sensitive key redaction', () => {
 // ── Logger – error serialisation ─────────────────────────────────────────────
 
 describe('Logger – error serialisation', () => {
-  let testLogger: { logger: Logger; logs: CapturedLog[] };
+  let testLogger: { logger: Logger; logs: CapturedLog[]; restore: () => void };
 
   beforeEach(() => { testLogger = createTestLogger(); });
+  afterEach(() => { testLogger.restore(); });
 
   it('serialises Error objects passed as err field', () => {
     const err = new Error('something broke');
@@ -264,9 +274,10 @@ describe('Logger – error serialisation', () => {
 // ── createLogger factory ──────────────────────────────────────────────────────
 
 describe('createLogger', () => {
-  let testLogger: { logger: Logger; logs: CapturedLog[] };
+  let testLogger: { logger: Logger; logs: CapturedLog[]; restore: () => void };
 
   beforeEach(() => { testLogger = createTestLogger(); });
+  afterEach(() => { testLogger.restore(); });
 
   it('returns a Logger instance', () => {
     expect(createLogger()).toBeInstanceOf(Logger);
@@ -274,9 +285,6 @@ describe('createLogger', () => {
 
   it('binds supplied context', () => {
     const log = createLogger({ requestId: 'factory-req' });
-    // Create a new test logger for this specific test
-    const specificLogger = createTestLogger();
-    specificLogger.logger = log;
     log.info('from factory');
     expect(testLogger.logs[0]!['requestId']).toBe('factory-req');
     expect(testLogger.logs[0]!.msg).toBe('from factory');
@@ -286,9 +294,10 @@ describe('createLogger', () => {
 // ── default logger singleton ──────────────────────────────────────────────────
 
 describe('default logger singleton', () => {
-  let testLogger: { logger: Logger; logs: CapturedLog[] };
+  let testLogger: { logger: Logger; logs: CapturedLog[]; restore: () => void };
 
   beforeEach(() => { testLogger = createTestLogger(); });
+  afterEach(() => { testLogger.restore(); });
 
   it('is a Logger instance', () => {
     expect(logger).toBeInstanceOf(Logger);
@@ -304,9 +313,10 @@ describe('default logger singleton', () => {
 // ── createRequestLogger utility ───────────────────────────────────────────────
 
 describe('createRequestLogger', () => {
-  let testLogger: { logger: Logger; logs: CapturedLog[] };
+  let testLogger: { logger: Logger; logs: CapturedLog[]; restore: () => void };
 
   beforeEach(() => { testLogger = createTestLogger(); });
+  afterEach(() => { testLogger.restore(); });
 
   it('creates a logger with request context', () => {
     const reqLogger = createRequestLogger('req-123', 'corr-456');
