@@ -38,9 +38,13 @@ export class ContractsController {
     try {
       const pagination = parsePaginationQuery((req.query ?? {}) as Record<string, unknown>);
       if (!pagination.ok) {
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         res.status(400).json({
-          status: 'error',
-          message: pagination.error,
+          error: {
+            code: 'bad_request',
+            message: pagination.error,
+            requestId,
+          },
         });
         return;
       }
@@ -73,7 +77,14 @@ export class ContractsController {
     try {
       const contract = await contractsService.getContractById(req.params.id);
       if (!contract) {
-        res.status(404).json({ status: 'error', error: { code: 'not_found', message: 'Not found' } });
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+        res.status(404).json({
+          error: {
+            code: 'not_found',
+            message: 'The requested resource was not found',
+            requestId,
+          },
+        });
         return;
       }
       res.status(200).json({ status: 'success', data: contract });
@@ -162,7 +173,14 @@ export class ContractsController {
       res.status(200).json(response);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
-        res.status(422).json({ status: 'error', message: error.message });
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+        res.status(422).json({
+          error: {
+            code: 'bad_request',
+            message: error.message,
+            requestId,
+          },
+        });
         return;
       }
       next(error);

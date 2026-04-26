@@ -146,10 +146,14 @@ export function createRateLimiter(config: RateLimiterConfig = {}) {
           res.setHeader('Retry-After', retryAfterSec);
           res.setHeader('X-RateLimit-Blocked', 'true');
         }
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         res.status(429).json({
-          error: 'Too Many Requests',
-          message: 'Your access has been temporarily blocked due to excessive requests.',
-          retryAfter: retryAfterSec,
+          error: {
+            code: 'rate_limited',
+            message: 'Your access has been temporarily blocked due to excessive requests.',
+            requestId,
+            retryAfter: retryAfterSec,
+          },
         });
         return;
       }
@@ -217,10 +221,14 @@ export function createRateLimiter(config: RateLimiterConfig = {}) {
           res.setHeader('Retry-After', retryAfterSec);
           res.setHeader('X-RateLimit-Blocked', 'true');
         }
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         res.status(429).json({
-          error: 'Too Many Requests',
-          message: 'Abuse detected. Your access has been temporarily blocked.',
-          retryAfter: retryAfterSec,
+          error: {
+            code: 'rate_limited',
+            message: 'Abuse detected. Your access has been temporarily blocked.',
+            requestId,
+            retryAfter: retryAfterSec,
+          },
         });
         return;
       }
@@ -228,10 +236,14 @@ export function createRateLimiter(config: RateLimiterConfig = {}) {
       abuseMap.set(hashedKey, abuse);
 
       if (sendHeaders) res.setHeader('Retry-After', resetSec);
+      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
       res.status(429).json({
-        error: 'Too Many Requests',
-        message: `Rate limit exceeded. Try again in ${resetSec} second(s).`,
-        retryAfter: resetSec,
+        error: {
+          code: 'rate_limited',
+          message: `Rate limit exceeded. Try again in ${resetSec} second(s).`,
+          requestId,
+          retryAfter: resetSec,
+        },
       });
       return;
     }

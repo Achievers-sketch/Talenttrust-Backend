@@ -18,33 +18,19 @@ import reputationRouter from './routes/reputation.routes';
 import dependencyScanRouter from './routes/dependency-scan.routes';
 import { requestIdMiddleware } from './middleware/requestId';
 import { notFoundHandler, errorHandler } from './middleware/errorHandlers';
+import { MetricsService } from './observability/metrics-service';
+import { RateLimitStore } from './lib/rateLimitStore';
 
-interface AppFactoryOptions {
-  includeTerminalHandlers?: boolean;
-}
-
-export function attachTerminalHandlers(app: express.Application): void {
-  // ── 404 handler ──────────────────────────────────────────────────────────
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: 'Not Found' });
-  });
-
-  // ── Global error handler ─────────────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Internal Server Error' });
-  });
-}
+// Module-level store instance for shutdown handler
+let rateLimitStore: RateLimitStore;
 
 /**
  * Creates and configures the Express application.
  *
  * @returns Configured Express app instance (not yet listening).
  */
-export function createApp(options: AppFactoryOptions = {}): express.Application {
+export function createApp(): express.Application {
   const app = express();
-  const { includeTerminalHandlers = true } = options;
 
   // ── Security Middleware ───────────────────────────────────────────────────
   applySecurityMiddleware(app);
@@ -52,6 +38,8 @@ export function createApp(options: AppFactoryOptions = {}): express.Application 
   const metricsService = new MetricsService(
     process.env['SERVICE_NAME'] ?? 'talenttrust-backend',
   );
+
+  rateLimitStore = new RateLimitStore({ sweepIntervalMs: 60_000 });
 
   // ── Middleware ────────────────────────────────────────────────────────────
   app.use(express.json());
@@ -64,15 +52,19 @@ export function createApp(options: AppFactoryOptions = {}): express.Application 
   app.use('/api/v1/reputation', reputationRouter);
   app.use('/api/v1/dependency-scan', dependencyScanRouter);
 
-  if (includeTerminalHandlers) {
-    attachTerminalHandlers(app);
-  }
+  // ── 404 handler ──────────────────────────────────────────────────────────
+  app.use(notFoundHandler);
+
+  // ── Global error handler ─────────────────────────────────────────────────
+  app.use(errorHandler);
 
   return app;
 }
 
 /** Shutdown handler for graceful termination. */
 export function shutdownRateLimitStore(): void {
-  rateLimitStore.destroy();
-  console.log('[rateLimit] Store shutdown complete');
+  if (rateLimitStore) {
+    rateLimitStore.destroy();
+    console.log('[rateLimit] Store shutdown complete');
+  }
 }

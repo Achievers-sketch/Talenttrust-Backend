@@ -60,11 +60,25 @@ interface JwtPayload {
 // ─── Error response helpers ───────────────────────────────────────────────────
 
 function unauthorized(res: Response, message = "Unauthorized"): void {
-  res.status(401).json({ error: message });
+  const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  res.status(401).json({
+    error: {
+      code: 'unauthorized',
+      message,
+      requestId,
+    },
+  });
 }
 
 function forbidden(res: Response, message = "Forbidden"): void {
-  res.status(403).json({ error: message });
+  const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  res.status(403).json({
+    error: {
+      code: 'forbidden',
+      message,
+      requestId,
+    },
+  });
 }
 
 // ─── requireAuth ─────────────────────────────────────────────────────────────
@@ -222,7 +236,14 @@ export function requirePermission(
         if (ownerId === null) {
           // Record does not exist — return 404 rather than leaking whether
           // the record exists but is forbidden.
-          res.status(404).json({ error: "Resource not found." });
+          const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+          res.status(404).json({
+            error: {
+              code: 'not_found',
+              message: 'Resource not found.',
+              requestId,
+            },
+          });
           return;
         }
 
@@ -244,7 +265,14 @@ export function requirePermission(
       next();
     } catch {
       // Resolver threw — treat as a server error, not an auth failure.
-      res.status(500).json({ error: "Authorization check failed." });
+      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+      res.status(500).json({
+        error: {
+          code: 'internal_error',
+          message: 'Authorization check failed.',
+          requestId,
+        },
+      });
     }
   };
 }

@@ -13,7 +13,14 @@ export const authMiddleware = async (req: AuthenticatedRequest, res: Response, n
   const authHeader = req.headers.authorization;
   
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authentication required' });
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+    return res.status(401).json({
+      error: {
+        code: 'unauthorized',
+        message: 'Authentication required',
+        requestId,
+      },
+    });
   }
 
   const token = authHeader.substring(7);
@@ -49,17 +56,38 @@ export const authMiddleware = async (req: AuthenticatedRequest, res: Response, n
     return next();
   }
 
-  return res.status(401).json({ error: 'Invalid authentication token' });
+  const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  return res.status(401).json({
+    error: {
+      code: 'unauthorized',
+      message: 'Invalid authentication token',
+      requestId,
+    },
+  });
 };
 
 export const requireContractAccess = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   if (!req.user) {
-    return res.status(401).json({ error: 'Authentication required' });
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+    return res.status(401).json({
+      error: {
+        code: 'unauthorized',
+        message: 'Authentication required',
+        requestId,
+      },
+    });
   }
 
   const contractId = req.params.contractId;
   if (!contractId) {
-    return res.status(400).json({ error: 'Contract ID required' });
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+    return res.status(400).json({
+      error: {
+        code: 'bad_request',
+        message: 'Contract ID required',
+        requestId,
+      },
+    });
   }
 
   // For demo purposes, we'll allow access to all contracts

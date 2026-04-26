@@ -20,10 +20,23 @@ export class ReputationController {
       // We always return a profile, defaulting to an empty one if no rating exists
       res.status(200).json({ status: 'success', data: profile });
     } catch (error: any) {
+      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
       if (error.message === 'Freelancer ID is required') {
-        res.status(400).json({ status: 'error', message: error.message });
+        res.status(400).json({
+          error: {
+            code: 'bad_request',
+            message: error.message,
+            requestId,
+          },
+        });
       } else {
-        res.status(500).json({ status: 'error', message: 'Internal server error' });
+        res.status(500).json({
+          error: {
+            code: 'internal_error',
+            message: 'An unexpected error occurred',
+            requestId,
+          },
+        });
       }
     }
   }
@@ -40,17 +53,37 @@ export class ReputationController {
       
       // Basic input validation handles securely before reaching service
       if (!payload || !payload.reviewerId || typeof payload.rating !== 'number') {
-        res.status(400).json({ status: 'error', message: 'Invalid payload: reviewerId and rating are required' });
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+        res.status(400).json({
+          error: {
+            code: 'bad_request',
+            message: 'Invalid payload: reviewerId and rating are required',
+            requestId,
+          },
+        });
         return;
       }
 
       const updatedProfile = ReputationService.updateProfile(id, payload);
       res.status(200).json({ status: 'success', data: updatedProfile });
     } catch (error: any) {
+      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
       if (error.message.includes('required') || error.message.includes('Rating must be between 1 and 5')) {
-        res.status(400).json({ status: 'error', message: error.message });
+        res.status(400).json({
+          error: {
+            code: 'bad_request',
+            message: error.message,
+            requestId,
+          },
+        });
       } else {
-        res.status(500).json({ status: 'error', message: 'Internal server error' });
+        res.status(500).json({
+          error: {
+            code: 'internal_error',
+            message: 'An unexpected error occurred',
+            requestId,
+          },
+        });
       }
     }
   }
