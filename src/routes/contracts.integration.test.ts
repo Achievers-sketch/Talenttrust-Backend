@@ -33,11 +33,8 @@ describe('Contracts Routes Integration Tests', () => {
             freelancerId: null,
             budget: 1000,
             deadline: null,
-            status: 'PENDING',
-            terms: null,
-            milestones: null,
+            status: 'draft',
             createdAt: '2023-01-01T00:00:00Z',
-            updatedAt: '2023-01-01T00:00:00Z',
           },
         ],
         pagination: {
@@ -56,7 +53,8 @@ describe('Contracts Routes Integration Tests', () => {
 
       expect(response.body).toEqual({
         status: 'success',
-        data: mockContractsData,
+        data: mockContractsData.contracts,
+        pagination: mockContractsData.pagination,
       });
     });
 
@@ -116,11 +114,8 @@ describe('Contracts Routes Integration Tests', () => {
         freelancerId: null,
         budget: 1000,
         deadline: null,
-        status: 'PENDING',
-        terms: null,
-        milestones: null,
+        status: 'draft',
         createdAt: '2023-01-01T00:00:00Z',
-        updatedAt: '2023-01-01T00:00:00Z',
       };
 
       jest.spyOn(ContractsService.prototype, 'getContractById').mockResolvedValue(mockContract as any);
@@ -144,7 +139,10 @@ describe('Contracts Routes Integration Tests', () => {
 
       expect(response.body).toEqual({
         status: 'error',
-        error: 'Contract not found',
+        error: {
+          code: 'not_found',
+          message: 'Not found'
+        },
       });
     });
 
@@ -168,11 +166,8 @@ describe('Contracts Routes Integration Tests', () => {
         freelancerId: null,
         budget: 1000,
         deadline: null,
-        status: 'PENDING',
-        terms: null,
-        milestones: null,
+        status: 'active',
         createdAt: '2023-01-01T00:00:00Z',
-        updatedAt: '2023-01-01T00:00:00Z',
       };
 
       jest.spyOn(ContractsService.prototype, 'createContract').mockResolvedValue(mockContract as any);
@@ -225,11 +220,8 @@ describe('Contracts Routes Integration Tests', () => {
         freelancerId: null,
         budget: 1500,
         deadline: null,
-        status: 'ACTIVE',
-        terms: null,
-        milestones: null,
+        status: 'active',
         createdAt: '2023-01-01T00:00:00Z',
-        updatedAt: '2023-01-02T00:00:00Z',
       };
 
       jest.spyOn(ContractsService.prototype, 'updateContract').mockResolvedValue(mockUpdatedContract as any);

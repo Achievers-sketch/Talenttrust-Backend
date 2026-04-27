@@ -194,11 +194,18 @@ describe("dbProbe", () => {
 
 // ── redisProbe ─────────────────────────────────────────────────────────────
 
-jest.mock("ioredis");
+jest.mock("ioredis", () => {
+  return jest.fn().mockImplementation(() => ({
+    connect: jest.fn().mockResolvedValue(undefined),
+    ping: jest.fn().mockResolvedValue("PONG"),
+    disconnect: jest.fn().mockReturnValue(undefined),
+    on: jest.fn().mockReturnThis(),
+  }));
+});
 
 import Redis from "ioredis";
 
-const MockRedis = Redis as jest.MockedClass<typeof Redis>;
+const MockRedis = Redis as unknown as jest.Mock;
 
 describe("redisProbe", () => {
   const ORIGINAL = process.env;
