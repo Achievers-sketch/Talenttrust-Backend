@@ -11,7 +11,9 @@ The TalentTrust audit log provides **immutable, tamper-evident recording** of al
 ```
 src/audit/
 ├── types.ts                       — Core interfaces and type definitions
-├── store.ts                       — Append-only, hash-chained in-memory store
+├── repository.ts                  — Repository interface + backend selection
+├── store.ts                       — In-memory repository implementation
+├── sqliteRepository.ts            — Durable SQLite repository implementation
 ├── service.ts                     — Application-level facade with convenience wrappers
 ├── redact.ts                      — Deterministic redaction rules (headers, body, email)
 ├── middleware.ts                  — Express middleware (attaches audit helper to res.locals)
@@ -179,6 +181,11 @@ Verify the hash chain. Returns `200` if valid, `409` if corruption is detected.
 
 Retrieve a single entry by UUID. Returns `404` if not found.
 
+### `GET /api/v1/audit/export`
+
+Stream entries as newline-delimited JSON (`application/x-ndjson`) for export use cases.
+This endpoint uses repository streaming to avoid loading all rows in memory.
+
 ---
 
 ## Automatic Audit Logging for Protected Endpoints
@@ -320,7 +327,9 @@ Numbers, booleans, and `null`/`undefined` pass through unmodified.
 
 ### Production Hardening Checklist
 
-- [ ] Replace in-memory store with a write-once database (PostgreSQL with no `UPDATE`/`DELETE` grants, or an append-only table with row-level security)
+- [x] Repository pattern implemented with pluggable backends (`memory`, `sqlite`)
+- [x] Durable SQLite backend available via `AUDIT_STORAGE_BACKEND=sqlite`
+- [ ] For production, use a write-once policy (no `UPDATE`/`DELETE` grants) and strict file/database access controls
 - [ ] Gate `/api/v1/audit` endpoints behind JWT authentication + `auditor` role check
 - [ ] Rate-limit the `/integrity` endpoint (it scans the full log)
 - [ ] Run `verifyIntegrity()` on a scheduled job and alert on failure

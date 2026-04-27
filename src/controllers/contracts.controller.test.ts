@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { ContractBoundsError, CONTRACT_BOUNDS } from '../contracts/bounds';
 
-const mockGetContracts = jest.fn();
+const mockGetAllContracts = jest.fn();
 const mockGetContractById = jest.fn();
 const mockCreateContract = jest.fn();
 const mockUpdateContract = jest.fn();
@@ -16,20 +16,16 @@ jest.mock('../repositories/contractRepository', () => ({
   ContractRepository: jest.fn().mockImplementation(() => ({})),
 }));
 
-jest.mock('../services/contracts.service', () => {
-  return {
-    ContractsService: jest.fn().mockImplementation(() => {
-      return {
-        getContracts: mockGetContracts,
-        getContractById: mockGetContractById,
-        createContract: mockCreateContract,
-        updateContract: mockUpdateContract,
-        deleteContract: mockDeleteContract,
-        getContractStats: mockGetContractStats,
-      };
-    }),
-  };
-});
+jest.mock('../services/contracts.service', () => ({
+  ContractsService: jest.fn().mockImplementation(() => ({
+    getAllContracts: mockGetAllContracts,
+    getContractById: mockGetContractById,
+    createContract: mockCreateContract,
+    updateContract: mockUpdateContract,
+    deleteContract: mockDeleteContract,
+    getContractStats: mockGetContractStats,
+  })),
+}));
 
 import { ContractsController } from './contracts.controller';
 
@@ -49,7 +45,7 @@ describe('ContractsController', () => {
     mockNext = jest.fn();
     
     // Clear all mocks
-    mockGetContracts.mockClear();
+    mockGetAllContracts.mockClear();
     mockGetContractById.mockClear();
     mockCreateContract.mockClear();
     mockUpdateContract.mockClear();
@@ -70,7 +66,11 @@ describe('ContractsController', () => {
         mockNext,
       );
       expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: [] });
+      expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'success',
+        data: [],
+        pagination: expect.any(Object)
+      }));
     });
 
     it('calls next() on error', async () => {
@@ -85,6 +85,35 @@ describe('ContractsController', () => {
     });
   });
 
+  describe('getContractById', () => {
+    it('returns 200 with contract data', async () => {
+      const contract = { id: 'abc', title: 'Test' };
+      mockGetContractById.mockResolvedValue(contract);
+      mockRequest.params = { id: 'abc' };
+      await ContractsController.getContractById(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: contract });
+    });
+
+    it('delegates to next() for NotFoundError when contract missing', async () => {
+      mockGetContractById.mockResolvedValue(null);
+      mockRequest.params = { id: 'missing' };
+      await ContractsController.getContractById(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockNext).toHaveBeenCalledWith(expect.any(Error));
+      const error = (mockNext as jest.Mock).mock.calls[0][0];
+      expect(error.name).toBe('AppError');
+      expect(error.statusCode).toBe(404);
+    });
+  });
+
   describe('createContract', () => {
     it('returns 201 on success', async () => {
       const contract = { id: 'abc', status: 'PENDING' };
@@ -95,7 +124,11 @@ describe('ContractsController', () => {
         mockNext,
       );
       expect(mockResponse.status).toHaveBeenCalledWith(201);
-      expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: contract });
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        status: 'success',
+        data: contract,
+        message: 'Contract created successfully'
+      });
     });
 
     it('returns 422 when service throws ContractBoundsError', async () => {

@@ -128,4 +128,27 @@ describe('adminRouter', () => {
       expect(body.data).toHaveProperty('timestamp');
     });
   });
+
+  describe('GET /circuit-breakers', () => {
+    it('returns 401 without Authorization header', async () => {
+      const res = await request(server, 'GET', '/api/v1/admin/circuit-breakers');
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 403 for non-admin role', async () => {
+      const token = createToken('client');
+      const res = await request(server, 'GET', '/api/v1/admin/circuit-breakers', token);
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('returns 200 with breakers array for admin', async () => {
+      const token = createToken('admin');
+      const res = await request(server, 'GET', '/api/v1/admin/circuit-breakers', token);
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.status).toBe('success');
+      expect(Array.isArray(body.data.breakers)).toBe(true);
+      expect(typeof body.data.timestamp).toBe('number');
+    });
+  });
 });

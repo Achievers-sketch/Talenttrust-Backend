@@ -8,6 +8,7 @@
  */
 
 import { ComplianceAuditLog, RetentionAction, DataEntityType } from './types';
+import * as crypto from 'crypto';
 
 /**
  * Compliance audit log entry builder
@@ -72,11 +73,55 @@ export class ComplianceAuditLogger {
       notes: entry.notes,
     };
 
+    // Generate proof for deletion or if explicitly requested
+    if (entry.action === RetentionAction.DELETE || entry.action === RetentionAction.ARCHIVE) {
+      auditLog.proof = this.generateProof(auditLog);
+    }
+
     this.auditLogs.set(auditLog.id, auditLog);
     this.logQueue.push(auditLog);
     this.addToIndex(entry.entityId, auditLog.id);
 
     return auditLog;
+  }
+
+  /**
+   * Generate a verifiable cryptographic proof for an audit entry
+   * 
+   * @param {Omit<ComplianceAuditLog, 'id' | 'proof'>} log - Audit log entry
+   * @returns {string} SHA-256 HMAC signature
+   * @private
+   */
+  private generateProof(log: any): string {
+    const payload = JSON.stringify({
+      entityId: log.entityId,
+      entityType: log.entityType,
+      action: log.action,
+      actor: log.actor,
+      timestamp: log.timestamp.toISOString(),
+      details: log.details,
+      compliance: log.compliance,
+    });
+
+    // In production, use a secure key from environment variables
+    const secret = process.env.COMPLIANCE_AUDIT_SECRET || 'talenttrust-compliance-secret-key-2024';
+    
+    return crypto
+      .createHmac('sha256', secret)
+      .update(payload)
+      .digest('hex');
+  }
+
+  /**
+   * Verify an audit log entry proof
+   * 
+   * @param {ComplianceAuditLog} log - Audit log entry to verify
+   * @returns {boolean}
+   */
+  verifyProof(log: ComplianceAuditLog): boolean {
+    if (!log.proof) return false;
+    const expectedProof = this.generateProof(log);
+    return log.proof === expectedProof;
   }
 
   /**

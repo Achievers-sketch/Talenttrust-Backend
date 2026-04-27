@@ -1,42 +1,8 @@
-import { randomUUID } from 'uuid';
-import { ContractResponse, ContractListResponse, CreateContractDto, UpdateContractDto, ContractQueryParams } from '../modules/contracts/dto/contract.dto';
+import { v4 as uuidv4 } from 'uuid';
+import { CreateContractDto, UpdateContractDto, ContractQueryParams } from '../modules/contracts/dto/contract.dto';
+import { Contract, ContractStatus } from '../db/types';
 
-/**
- * Repository interface for contracts data access layer.
- * Provides abstraction for database operations and enables easy swapping of implementations.
- */
-export interface ContractsRepository {
-  // CRUD operations
-  create(contractData: CreateContractDto): Promise<ContractResponse>;
-  findById(id: string): Promise<ContractResponse | null>;
-  findMany(params: ContractQueryParams): Promise<ContractListResponse>;
-  update(id: string, updateData: UpdateContractDto): Promise<ContractResponse>;
-  delete(id: string): Promise<void>;
-  
-  // Additional utility methods
-  exists(id: string): Promise<boolean>;
-  count(filters?: Partial<ContractQueryParams>): Promise<number>;
-}
-
-/**
- * Contract entity interface representing the database model
- */
-export interface ContractEntity {
-  id: string;
-  title: string;
-  description: string;
-  freelancerId: string | null;
-  clientId: string;
-  budget: number;
-  deadline: string | null;
-  status: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | 'DISPUTED';
-  terms: string | null;
-  milestones: ContractMilestoneEntity[] | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ContractMilestoneEntity {
+export interface ContractMilestoneResponse {
   title: string;
   description: string;
   amount: number;
@@ -44,54 +10,94 @@ export interface ContractMilestoneEntity {
   completed: boolean;
 }
 
+export interface ContractResponse extends Contract {
+  milestones: ContractMilestoneResponse[] | null;
+  updatedAt: string;
+}
+
+export interface ContractListResponse {
+  contracts: ContractResponse[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+/**
+ * Repository interface for contracts data access layer.
+ */
+export interface ContractsRepository {
+  create(contractData: CreateContractDto): Promise<ContractResponse>;
+  findById(id: string): Promise<ContractResponse | undefined>;
+  findAll(): Promise<ContractResponse[]>;
+  findMany(params: ContractQueryParams): Promise<ContractListResponse>;
+  update(id: string, updateData: UpdateContractDto): Promise<ContractResponse>;
+  updateWithVersion(id: string, fields: Partial<Contract>, expectedVersion: number): Promise<ContractResponse>;
+  delete(id: string): Promise<boolean>;
+  exists(id: string): Promise<boolean>;
+  count(filters?: Partial<ContractQueryParams>): Promise<number>;
+}
+
+export interface ContractEntity extends Contract {
+  description: string;
+  deadline: string | null;
+  terms: string | null;
+  milestones: ContractMilestoneResponse[] | null;
+  updatedAt: string;
+}
+
 /**
  * In-memory implementation of ContractsRepository for development and testing.
- * Implements the full CRUD interface with proper data validation and transformation.
  */
 export class InMemoryContractsRepository implements ContractsRepository {
   private contracts: Map<string, ContractEntity> = new Map();
 
-  /**
-   * Creates a new contract with generated ID and timestamps
-   */
   async create(contractData: CreateContractDto): Promise<ContractResponse> {
-    const id = randomUUID();
+    const id = uuidv4();
     const now = new Date().toISOString();
     
     const contract: ContractEntity = {
       id,
       title: contractData.title,
       description: contractData.description,
-      freelancerId: contractData.freelancerId || null,
+      freelancerId: contractData.freelancerId || '',
       clientId: contractData.clientId,
-      budget: contractData.budget,
+      amount: contractData.budget,
       deadline: contractData.deadline || null,
-      status: contractData.status || 'PENDING',
+      status: (contractData.status as ContractStatus) || 'draft',
       terms: contractData.terms || null,
-      milestones: contractData.milestones || null,
+      milestones: contractData.milestones ? contractData.milestones.map(m => ({
+        title: m.title,
+        description: m.description,
+        amount: m.amount,
+        deadline: m.deadline || null,
+        completed: m.completed || false
+      })) : null,
       createdAt: now,
       updatedAt: now,
+      version: 0,
     };
 
     this.contracts.set(id, contract);
     return this.mapToResponse(contract);
   }
 
-  /**
-   * Finds a contract by ID
-   */
-  async findById(id: string): Promise<ContractResponse | null> {
+  async findById(id: string): Promise<ContractResponse | undefined> {
     const contract = this.contracts.get(id);
-    return contract ? this.mapToResponse(contract) : null;
+    return contract ? this.mapToResponse(contract) : undefined;
   }
 
-  /**
-   * Finds multiple contracts with filtering, sorting, and pagination
-   */
+  async findAll(): Promise<ContractResponse[]> {
+    return Array.from(this.contracts.values())
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(c => this.mapToResponse(c));
+  }
+
   async findMany(params: ContractQueryParams): Promise<ContractListResponse> {
     let contracts = Array.from(this.contracts.values());
 
-    // Apply filters
     if (params.status) {
       contracts = contracts.filter(c => c.status === params.status);
     }
@@ -102,24 +108,10 @@ export class InMemoryContractsRepository implements ContractsRepository {
       contracts = contracts.filter(c => c.freelancerId === params.freelancerId);
     }
 
-    // Apply sorting
-    contracts.sort((a, b) => {
-      const aValue = a[params.sortBy as keyof ContractEntity];
-      const bValue = b[params.sortBy as keyof ContractEntity];
-      
-      if (aValue === null || aValue === undefined) return 1;
-      if (bValue === null || bValue === undefined) return -1;
-      
-      const comparison = aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
-      return params.sortOrder === 'desc' ? -comparison : comparison;
-    });
-
-    // Apply pagination
     const total = contracts.length;
     const totalPages = Math.ceil(total / params.limit);
     const startIndex = (params.page - 1) * params.limit;
-    const endIndex = startIndex + params.limit;
-    const paginatedContracts = contracts.slice(startIndex, endIndex);
+    const paginatedContracts = contracts.slice(startIndex, startIndex + params.limit);
 
     return {
       contracts: paginatedContracts.map(c => this.mapToResponse(c)),
@@ -132,94 +124,79 @@ export class InMemoryContractsRepository implements ContractsRepository {
     };
   }
 
-  /**
-   * Updates an existing contract
-   */
   async update(id: string, updateData: UpdateContractDto): Promise<ContractResponse> {
     const existingContract = this.contracts.get(id);
     if (!existingContract) {
       throw new Error(`Contract with id ${id} not found`);
     }
 
+    const { budget, ...rest } = updateData;
     const updatedContract: ContractEntity = {
       ...existingContract,
-      ...updateData,
+      ...rest,
+      amount: budget ?? existingContract.amount,
       updatedAt: new Date().toISOString(),
-    };
+    } as ContractEntity;
 
     this.contracts.set(id, updatedContract);
     return this.mapToResponse(updatedContract);
   }
 
-  /**
-   * Deletes a contract by ID
-   */
-  async delete(id: string): Promise<void> {
-    const exists = this.contracts.has(id);
-    if (!exists) {
+  async updateWithVersion(
+    id: string,
+    fields: Partial<Contract>,
+    expectedVersion: number
+  ): Promise<ContractResponse> {
+    const existing = this.contracts.get(id);
+    if (!existing) {
       throw new Error(`Contract with id ${id} not found`);
     }
-    this.contracts.delete(id);
+
+    if (existing.version !== expectedVersion) {
+      throw new Error('Version conflict');
+    }
+
+    const updated: ContractEntity = {
+      ...existing,
+      ...fields,
+      version: existing.version + 1,
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.contracts.set(id, updated);
+    return this.mapToResponse(updated);
   }
 
-  /**
-   * Checks if a contract exists
-   */
+  async delete(id: string): Promise<boolean> {
+    const exists = this.contracts.has(id);
+    if (exists) {
+      this.contracts.delete(id);
+    }
+    return exists;
+  }
+
   async exists(id: string): Promise<boolean> {
     return this.contracts.has(id);
   }
 
-  /**
-   * Counts contracts with optional filters
-   */
   async count(filters?: Partial<ContractQueryParams>): Promise<number> {
     let contracts = Array.from(this.contracts.values());
-
     if (filters) {
-      if (filters.status) {
-        contracts = contracts.filter(c => c.status === filters.status);
-      }
-      if (filters.clientId) {
-        contracts = contracts.filter(c => c.clientId === filters.clientId);
-      }
-      if (filters.freelancerId) {
-        contracts = contracts.filter(c => c.freelancerId === filters.freelancerId);
-      }
+      if (filters.status) contracts = contracts.filter(c => c.status === filters.status);
+      if (filters.clientId) contracts = contracts.filter(c => c.clientId === filters.clientId);
+      if (filters.freelancerId) contracts = contracts.filter(c => c.freelancerId === filters.freelancerId);
     }
-
     return contracts.length;
   }
 
-  /**
-   * Maps a ContractEntity to ContractResponse
-   */
   private mapToResponse(contract: ContractEntity): ContractResponse {
-    return {
-      id: contract.id,
-      title: contract.title,
-      description: contract.description,
-      freelancerId: contract.freelancerId,
-      clientId: contract.clientId,
-      budget: contract.budget,
-      deadline: contract.deadline,
-      status: contract.status,
-      terms: contract.terms,
-      milestones: contract.milestones,
-      createdAt: contract.createdAt,
-      updatedAt: contract.updatedAt,
-    };
+    return { ...contract };
   }
 
-  /**
-   * Utility method for testing - clears all contracts
-   */
   clear(): void {
     this.contracts.clear();
   }
 
-  /**
-   * Utility method for testing - returns all contracts without pagination
-   */
   getAll(): ContractResponse[] {
     return Array.from(this.contracts.values()).map(c => this.mapToResponse(c));
   }

@@ -296,12 +296,17 @@ export class DataRetentionManager {
    * @returns {Promise<boolean>}
    */
   async deleteData(dataId: string, actor: string = 'system'): Promise<boolean> {
-    const data = await this.retrieveData(dataId);
+    const data = await this.retrieveData(dataId) || await this.archivalService.getArchivedData(dataId);
     if (!data) {
       throw new Error(`Data not found: ${dataId}`);
     }
 
-    const deleted = await this.storageManager.delete(dataId, ArchivalStorageType.LOCAL);
+    // Attempt to delete from both local and archive storage
+    const deletedLocal = await this.storageManager.delete(dataId, ArchivalStorageType.LOCAL);
+    const deletedArchive = await this.storageManager.delete(dataId, ArchivalStorageType.COLD_STORAGE) || 
+                           await this.storageManager.delete(dataId, ArchivalStorageType.ENCRYPTED_ARCHIVE);
+
+    const deleted = deletedLocal || deletedArchive;
 
     if (deleted) {
       this.auditLogger.logAction({
@@ -312,6 +317,8 @@ export class DataRetentionManager {
         details: {
           classification: data.classification,
           wasArchived: data.isArchived,
+          deletedFromLocal: deletedLocal,
+          deletedFromArchive: deletedArchive,
         },
         compliance: this.config.complianceStandard,
       });
@@ -336,23 +343,42 @@ export class DataRetentionManager {
     let deleted = 0;
     let failed = 0;
 
-    // This is a placeholder for the actual implementation
-    // In production, would process all data in batches
-    // const allData = await this.storageManager.list();
+    try {
+      // Process local data for archival
+      if (this.config.automaticArchival) {
+        const localData = await this.storageManager.getProvider(ArchivalStorageType.LOCAL).list();
+        for (const data of localData) {
+          try {
+            if (!data.isArchived && this.policyEngine.shouldArchive(data)) {
+              await this.archiveData(data.id, 'system-autoprocess');
+              archived++;
+            }
+          } catch (error) {
+            failed++;
+          }
+        }
+      }
 
-    // for (const data of allData) {
-    //   try {
-    //     if (!data.isArchived && this.policyEngine.shouldArchive(data)) {
-    //       await this.archiveData(data.id);
-    //       archived++;
-    //     } else if (data.isArchived && this.policyEngine.shouldPermanentlyDelete(data, this.config.postArchivalRetentionDays)) {
-    //       await this.storageManager.delete(data.id, ArchivalStorageType.COLD_STORAGE);
-    //       deleted++;
-    //     }
-    //   } catch (error) {
-    //     failed++;
-    //   }
-    // }
+      // Process archived data for permanent deletion
+      if (this.config.automaticDeletion) {
+        const archiveProviders = [ArchivalStorageType.COLD_STORAGE, ArchivalStorageType.ENCRYPTED_ARCHIVE];
+        for (const storageType of archiveProviders) {
+          const archivedData = await this.storageManager.getProvider(storageType).list();
+          for (const data of archivedData) {
+            try {
+              if (data.isArchived && this.policyEngine.shouldPermanentlyDelete(data, this.config.postArchivalRetentionDays)) {
+                await this.deleteData(data.id, 'system-autoprocess');
+                deleted++;
+              }
+            } catch (error) {
+              failed++;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error during batch retention processing:', error);
+    }
 
     return { archived, deleted, failed };
   }
@@ -419,6 +445,18 @@ export class DataRetentionManager {
    */
   exportAuditTrail(filter?: AuditLogFilter): ComplianceAuditLog[] {
     return this.auditLogger.exportLogs(filter);
+  }
+
+  /**
+   * Export archived data for external use or compliance
+   * 
+   * @param {string} dataId - Data identifier
+   * @param {'json' | 'csv'} [format] - Optional export format override
+   * @returns {Promise<string>}
+   */
+  async exportArchivedData(dataId: string, format?: 'json' | 'csv'): Promise<string> {
+    const exportFormat = format || this.config.exportFormat || 'json';
+    return this.archivalService.exportData(dataId, exportFormat);
   }
 
   /**

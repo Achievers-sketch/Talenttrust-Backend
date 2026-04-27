@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { Server } from 'http';
-import logger from './logger';
+import { logger } from './logger';
 import { registerShutdownHandlers, CloseableConnection, WorkerLike } from './shutdown';
 
 // ── Silence logger in tests ──────────────────────────────────────────────────
@@ -107,7 +107,7 @@ describe('registerShutdownHandlers', () => {
     registerShutdownHandlers(makeFakeServer(), [], []);
     process.emit('SIGTERM');
     await new Promise((r) => setTimeout(r, 50));
-    const messages = infoSpy.mock.calls.map((c) => c[c.length - 1]);
+    const messages = infoSpy.mock.calls.map((c: any[]) => c[c.length - 1]);
     expect(messages).toContain('http_drained');
   });
 
@@ -117,7 +117,7 @@ describe('registerShutdownHandlers', () => {
     registerShutdownHandlers(makeFakeServer(), [worker], []);
     process.emit('SIGTERM');
     await new Promise((r) => setTimeout(r, 50));
-    const messages = infoSpy.mock.calls.map((c) => c[c.length - 1]);
+    const messages = infoSpy.mock.calls.map((c: any[]) => c[c.length - 1]);
     expect(messages).toContain('bullmq_worker_closed');
   });
 
@@ -157,7 +157,7 @@ describe('registerShutdownHandlers', () => {
     process.emit('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));
 
-    const warnMessages = warnSpy.mock.calls.map((c) => c[c.length - 1]);
+    const warnMessages = warnSpy.mock.calls.map((c: any[]) => c[c.length - 1]);
     expect(warnMessages).toContain('http_drain_timeout');
     expect(exitSpy).toHaveBeenCalledWith(0);
   }, 2_000);
@@ -171,7 +171,7 @@ describe('registerShutdownHandlers', () => {
     process.emit('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));
 
-    const warnMessages = warnSpy.mock.calls.map((c) => c[c.length - 1]);
+    const warnMessages = warnSpy.mock.calls.map((c: any[]) => c[c.length - 1]);
     expect(warnMessages).toContain('bullmq_worker_timeout');
     expect(exitSpy).toHaveBeenCalledWith(0);
   }, 2_000);
@@ -184,7 +184,7 @@ describe('registerShutdownHandlers', () => {
     process.emit('SIGTERM');
     await new Promise((r) => setTimeout(r, 50));
 
-    const warnMessages = warnSpy.mock.calls.map((c) => c[c.length - 1]);
+    const warnMessages = warnSpy.mock.calls.map((c: any[]) => c[c.length - 1]);
     expect(warnMessages).toContain('connection_close_error');
     expect(exitSpy).toHaveBeenCalledWith(0);
   });

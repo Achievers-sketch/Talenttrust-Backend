@@ -123,6 +123,7 @@ Retrieve paginated metadata records for a contract.
 - `400`: Invalid query parameters
 - `401`: Authentication required
 - `403`: Access denied to this contract
+- `304`: Not Modified (when `If-None-Match` matches current representation)
 
 ---
 
@@ -157,6 +158,25 @@ Retrieve a specific metadata record.
 - `401`: Authentication required
 - `403`: Access denied to this contract
 - `404`: Metadata not found
+- `304`: Not Modified (when `If-None-Match` matches current representation)
+
+---
+
+## HTTP Caching with ETag
+
+Read-heavy metadata endpoints return an `ETag` header:
+
+- `GET /contracts/{contractId}/metadata`
+- `GET /contracts/{contractId}/metadata/{id}`
+
+Clients can send `If-None-Match` with a previously received ETag. If unchanged,
+the API returns `304 Not Modified` with no response body.
+
+Security notes:
+
+- ETags are generated from a SHA-256 hash of the response representation and a scoped resource key.
+- Sensitive values are masked before hashing for unauthorized users, preventing raw sensitive data exposure through cache validators.
+- ETag generation does not include direct plaintext metadata secrets.
 
 ---
 

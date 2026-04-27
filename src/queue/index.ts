@@ -13,6 +13,8 @@ export {
 	FailedJobEntry,
 	FailedJobQuery,
 	ReplayJobResult,
+	AddJobOptions,
+	AddJobResult,
 } from './types';
 export { queueConfig, getRedisConfig } from './config';
 export {
