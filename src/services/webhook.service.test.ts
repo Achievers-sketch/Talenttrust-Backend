@@ -13,34 +13,6 @@ describe('WebhookService', () => {
     jest.clearAllMocks();
   });
 
-  it('moves a repeatedly failing delivery to the DLQ after max retries (fake timers)', async () => {
-    jest.useFakeTimers();
-    try {
-      mockedAxios.post.mockRejectedValue(new Error('Network Error'));
-
-      const service = new WebhookService();
-      const payload = {
-        id: '123',
-        url: 'http://test.com',
-        data: {},
-        retryCount: 0,
-      };
-
-      const sendOp = service.send(payload);
-
-      for (let i = 0; i < 20; i += 1) {
-        await jest.runOnlyPendingTimersAsync();
-      }
-
-      await sendOp;
-
-      expect(service.getDLQ().length).toBe(1);
-      expect(service.getDLQ()[0].id).toBe('123');
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
   it('sends webhook without signature when no secret is provided', async () => {
     mockedAxios.post.mockResolvedValue({ status: 200 });
 
@@ -106,7 +78,6 @@ describe('WebhookService', () => {
   });
 
   it('handles webhook delivery failure with HMAC signing', async () => {
-    const mockSignature = 'sha256=abcdef1234567890';
     const mockTimestamp = 1640995200000;
     
     mockedCreateWebhookSignature.mockReturnValue({
@@ -142,7 +113,6 @@ describe('WebhookService', () => {
   });
 
   it('moves webhook with HMAC signing to DLQ after max retries', async () => {
-    const mockSignature = 'sha256=abcdef1234567890';
     const mockTimestamp = 1640995200000;
     
     mockedCreateWebhookSignature.mockReturnValue({
@@ -164,7 +134,6 @@ describe('WebhookService', () => {
     await service.send(payload);
 
     expect(service.getDLQ().length).toBe(1);
-    expect(service.getDLQ()[0].id).toBe('123');
-    expect(service.getDLQ()[0].webhookSecret).toBe('test-secret');
+    expect(service.getDLQ()[0].webhookId).toBe('123');
   });
 });

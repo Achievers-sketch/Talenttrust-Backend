@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { isSafeUrl } from '../utils/ssrf';
+
 
 /**
  * Zod schema for environment variable validation.
@@ -21,7 +23,10 @@ export const envSchema = z.object({
     .default('development'),
   
   // API Configuration
-  API_BASE_URL: z.string().url().optional(),
+  API_BASE_URL: z.string().url().refine(val => isSafeUrl(val), {
+    message: "API_BASE_URL must be a public URL and cannot point to internal resources (SSRF protection)"
+  }).optional(),
+
   
   DEBUG: z.string()
     .optional()
@@ -41,15 +46,30 @@ export const envSchema = z.object({
 
   // Stellar/Soroban Configuration
   STELLAR_HORIZON_URL: z.string().url()
+    .refine(val => isSafeUrl(val), {
+      message: "STELLAR_HORIZON_URL must be a public URL and cannot point to internal resources (SSRF protection)"
+    })
     .default('https://horizon-testnet.stellar.org'),
+
   
   STELLAR_NETWORK_PASSPHRASE: z.string()
     .default('Test SDF Network ; September 2015'),
   
   SOROBAN_RPC_URL: z.string().url()
+    .refine(val => isSafeUrl(val), {
+      message: "SOROBAN_RPC_URL must be a public URL and cannot point to internal resources (SSRF protection)"
+    })
     .default('https://soroban-testnet.stellar.org'),
+
   
   SOROBAN_CONTRACT_ID: z.string().optional(),
+  
+  STELLAR_RPC_URL: z.string().url()
+    .refine(val => isSafeUrl(val), {
+      message: "STELLAR_RPC_URL must be a public URL and cannot point to internal resources (SSRF protection)"
+    })
+    .default('https://rpc-testnet.stellar.org'),
+
 
   // Router / Blue-Green Deployment Configuration
   ACTIVE_COLOR: z.enum(['blue', 'green']).default('blue'),

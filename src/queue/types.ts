@@ -12,6 +12,7 @@ export enum JobType {
   EMAIL_NOTIFICATION = 'email-notification',
   CONTRACT_PROCESSING = 'contract-processing',
   REPUTATION_UPDATE = 'reputation-update',
+  REPUTATION_RECOMPUTE = 'reputation-recompute',
   BLOCKCHAIN_SYNC = 'blockchain-sync',
 }
 
@@ -45,6 +46,15 @@ export interface ReputationUpdatePayload {
 }
 
 /**
+ * Reputation recompute job payload
+ */
+export interface ReputationRecomputePayload {
+  batchSize?: number;
+  forceRecompute?: boolean;
+  resumeFromCheckpoint?: boolean;
+}
+
+/**
  * Blockchain synchronization job payload
  */
 export interface BlockchainSyncPayload {
@@ -60,6 +70,7 @@ export type JobPayload =
   | EmailNotificationPayload
   | ContractProcessingPayload
   | ReputationUpdatePayload
+  | ReputationRecomputePayload
   | BlockchainSyncPayload;
 
 export interface JobEnqueueOptions {
@@ -117,6 +128,7 @@ export interface JobResult {
 export interface AddJobOptions {
   priority?: number;
   delay?: number;
+  attempts?: number;
   dedupeKey?: string;
   dedupeTtl?: number;
 }

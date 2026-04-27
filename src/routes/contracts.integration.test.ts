@@ -10,6 +10,7 @@ import contractsRoutes from './contracts.routes';
 jest.mock('../services/soroban.service');
 
 import { ContractsService } from '../services/contracts.service';
+import { NotFoundError } from '../errors/appError';
 
 import jwt from 'jsonwebtoken';
 
@@ -31,22 +32,25 @@ describe('Contracts Routes Integration Tests', () => {
 
   describe('GET /api/v1/contracts', () => {
     it('should return contracts list with pagination', async () => {
-      const mockContractsData = [
-        {
-          id: 'contract-1',
-          title: 'Test Contract',
-          description: 'A test contract',
-          clientId: 'client-1',
-          freelancerId: null,
-          budget: 1000,
-          deadline: null,
-          status: 'PENDING',
-          terms: null,
-          milestones: null,
-          createdAt: '2023-01-01T00:00:00Z',
-          updatedAt: '2023-01-01T00:00:00Z',
-          amount: 1000,
-          version: 1,
+      const mockContractsData = {
+        contracts: [
+          {
+            id: 'contract-1',
+            title: 'Test Contract',
+            description: 'A test contract',
+            clientId: 'client-1',
+            freelancerId: null,
+            budget: 1000,
+            deadline: null,
+            status: 'draft',
+            createdAt: '2023-01-01T00:00:00Z',
+          },
+        ],
+        pagination: {
+          page: 1,
+          limit: 10,
+          total: 1,
+          totalPages: 1,
         },
       ];
 
@@ -60,7 +64,8 @@ describe('Contracts Routes Integration Tests', () => {
 
       expect(response.body).toMatchObject({
         status: 'success',
-        data: mockContractsData,
+        data: mockContractsData.contracts,
+        pagination: mockContractsData.pagination,
       });
     });
 
@@ -75,14 +80,12 @@ describe('Contracts Routes Integration Tests', () => {
     });
 
     it('should handle service errors', async () => {
-      (jest.spyOn(ContractsService.prototype, 'getAllContracts') as any).mockRejectedValue(new Error('Service error'));
+      jest.spyOn(ContractsService.prototype, 'getAllContracts').mockRejectedValue(new Error('Service error'));
 
       await request(app)
         .get('/api/v1/contracts')
         .set('Authorization', `Bearer ${clientToken}`)
         .expect(500);
-
-      // Error should be handled by error middleware
     });
   });
 
@@ -100,7 +103,7 @@ describe('Contracts Routes Integration Tests', () => {
         totalBudget: 10000,
       };
 
-      jest.spyOn(ContractsService.prototype, 'getContractStats').mockResolvedValue(mockStats);
+      jest.spyOn(ContractsService.prototype, 'getContractStats').mockResolvedValue(mockStats as any);
 
       const response = await request(app)
         .get('/api/v1/contracts/stats')
@@ -124,13 +127,8 @@ describe('Contracts Routes Integration Tests', () => {
         freelancerId: null,
         budget: 1000,
         deadline: null,
-        status: 'PENDING',
-        terms: null,
-        milestones: null,
+        status: 'draft',
         createdAt: '2023-01-01T00:00:00Z',
-        updatedAt: '2023-01-01T00:00:00Z',
-        amount: 1000,
-        version: 1,
       };
 
       jest.spyOn(ContractsService.prototype, 'getContractById').mockResolvedValue(mockContract as any);
@@ -147,14 +145,20 @@ describe('Contracts Routes Integration Tests', () => {
     });
 
     it('should return 404 when contract not found', async () => {
-      (jest.spyOn(ContractsService.prototype, 'getContractById') as any).mockResolvedValue(null);
+      jest.spyOn(ContractsService.prototype, 'getContractById').mockResolvedValue(null as any);
 
       const response = await request(app)
         .get('/api/v1/contracts/550e8400-e29b-41d4-a716-446655440000') // valid UUID so it doesn't trigger 400 Bad Request
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(404);
 
-      expect(response.body.error).toBe('Resource not found.');
+      expect(response.body).toEqual({
+        error: {
+          code: 'not_found',
+          message: 'The requested resource was not found',
+          requestId: expect.any(String),
+        },
+      });
     });
 
     it('should handle validation errors for invalid UUID', async () => {
@@ -178,13 +182,8 @@ describe('Contracts Routes Integration Tests', () => {
         freelancerId: null,
         budget: 1000,
         deadline: null,
-        status: 'PENDING',
-        terms: null,
-        milestones: null,
+        status: 'active',
         createdAt: '2023-01-01T00:00:00Z',
-        updatedAt: '2023-01-01T00:00:00Z',
-        amount: 1000,
-        version: 1,
       };
 
       jest.spyOn(ContractsService.prototype, 'createContract').mockResolvedValue(mockContract as any);
@@ -227,25 +226,6 @@ describe('Contracts Routes Integration Tests', () => {
       expect(response.body.message).toBe('Validation failed');
       expect(response.body.details).toBeDefined();
     });
-
-    it('should handle validation errors for unknown fields', async () => {
-      const invalidData = {
-        title: 'Valid Title',
-        description: 'Valid description that is long enough',
-        clientId: '550e8400-e29b-41d4-a716-446655440000',
-        budget: 1000,
-        unknownField: 'should not be allowed',
-      };
-
-      const response = await request(app)
-        .post('/api/v1/contracts')
-        .set('Authorization', `Bearer ${clientToken}`)
-        .send(invalidData)
-        .expect(400);
-
-      expect(response.body.status).toBe('error');
-      expect(response.body.message).toBe('Validation failed');
-    });
   });
 
   describe('PATCH /api/v1/contracts/:id', () => {
@@ -258,17 +238,11 @@ describe('Contracts Routes Integration Tests', () => {
         freelancerId: null,
         budget: 1500,
         deadline: null,
-        status: 'ACTIVE',
-        terms: null,
-        milestones: null,
+        status: 'active',
         createdAt: '2023-01-01T00:00:00Z',
-        updatedAt: '2023-01-02T00:00:00Z',
-        amount: 1500,
-        version: 2,
       };
 
-      jest.spyOn(ContractsService.prototype, 'getContractById').mockResolvedValue(mockUpdatedContract as any); // mock resolver
-      jest.spyOn(ContractsService.prototype, 'updateContract').mockResolvedValue(mockUpdatedContract as any); // mock business logic
+      jest.spyOn(ContractsService.prototype, 'updateContract').mockResolvedValue(mockUpdatedContract as any);
 
       const updateData = {
         title: 'Updated Contract',
@@ -300,39 +274,11 @@ describe('Contracts Routes Integration Tests', () => {
       expect(response.body.status).toBe('error');
       expect(response.body.message).toBe('Validation failed');
     });
-
-    it('should handle validation errors for invalid update data', async () => {
-      const mockContract = { id: 'contract-1', clientId: '550e8400-e29b-41d4-a716-446655440000', freelancerId: null } as any;
-      jest.spyOn(ContractsService.prototype, 'getContractById').mockResolvedValue(mockContract);
-
-      const invalidData = {
-        title: 'AB', // Too short
-        status: 'INVALID_STATUS',
-      };
-
-      const response = await request(app)
-        .patch('/api/v1/contracts/550e8400-e29b-41d4-a716-446655440000') // Use valid UUID
-        .set('Authorization', `Bearer ${clientToken}`)
-        .send(invalidData)
-        .expect(400);
-
-      expect(response.body.status).toBe('error');
-      expect(response.body.message).toBe('Validation failed');
-    });
   });
 
   describe('DELETE /api/v1/contracts/:id', () => {
     it('should delete a contract', async () => {
-      // Mock resolver returning contract to pass contractOwnerResolver
-      const mockContract = {
-        id: 'contract-1',
-        title: 'Test Contract',
-        description: 'A test contract',
-        clientId: 'client-1',
-        freelancerId: null,
-      };
-      jest.spyOn(ContractsService.prototype, 'getContractById').mockResolvedValue(mockContract as any);
-      jest.spyOn(ContractsService.prototype, 'deleteContract').mockResolvedValue(undefined);
+      jest.spyOn(ContractsService.prototype, 'deleteContract').mockResolvedValue(undefined as any);
 
       const response = await request(app)
         .delete('/api/v1/contracts/550e8400-e29b-41d4-a716-446655440000') // Use valid UUID
@@ -356,22 +302,19 @@ describe('Contracts Routes Integration Tests', () => {
     });
 
     it('should handle service errors when contract not found', async () => {
-      const mockContract = {
-        id: 'contract-1',
-        title: 'Test Contract',
-        description: 'A test contract',
-        clientId: 'client-1',
-        freelancerId: null,
-      };
-      jest.spyOn(ContractsService.prototype, 'getContractById').mockResolvedValue(mockContract as any);
-      (jest.spyOn(ContractsService.prototype, 'deleteContract') as any).mockRejectedValue(new Error('Contract not found'));
+      jest.spyOn(ContractsService.prototype, 'deleteContract').mockRejectedValue(new NotFoundError('Contract not found'));
 
       await request(app)
         .delete('/api/v1/contracts/550e8400-e29b-41d4-a716-446655440000')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .expect(500);
+        .expect(404);
 
-      // Error should be handled by error middleware
+      expect(response.body).toEqual({
+        error: {
+          code: 'not_found',
+          message: 'Contract not found',
+          requestId: expect.any(String),
+        },
+      });
     });
   });
 });

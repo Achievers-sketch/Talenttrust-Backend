@@ -74,6 +74,46 @@ auditRouter.get('/', (req: Request, res: Response): void => {
 });
 
 /**
+ * GET /api/v1/audit/export
+ * Streams NDJSON audit entries for export tooling.
+ */
+auditRouter.get('/export', (req: Request, res: Response): void => {
+  const {
+    action, severity, actor, resource, resourceId, from, to,
+  } = req.query as Record<string, string | undefined>;
+
+  const limit = Math.min(parseInt(req.query['limit'] as string ?? '100', 10) || 100, 1000);
+  const offset = Math.max(parseInt(req.query['offset'] as string ?? '0', 10) || 0, 0);
+
+  if (action && !VALID_ACTIONS.has(action as AuditAction)) {
+    res.status(400).json({ error: `Invalid action: ${action}` });
+    return;
+  }
+  if (severity && !VALID_SEVERITIES.has(severity as AuditSeverity)) {
+    res.status(400).json({ error: `Invalid severity: ${severity}` });
+    return;
+  }
+
+  const query: AuditQuery = {
+    ...(action && { action: action as AuditAction }),
+    ...(severity && { severity: severity as AuditSeverity }),
+    ...(actor && { actor }),
+    ...(resource && { resource }),
+    ...(resourceId && { resourceId }),
+    ...(from && { from }),
+    ...(to && { to }),
+    limit,
+    offset,
+  };
+
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  for (const entry of auditService.stream(query)) {
+    res.write(`${JSON.stringify(entry)}\n`);
+  }
+  res.end();
+});
+
+/**
  * GET /api/v1/audit/integrity
  * Verify the tamper-evident hash chain.
  * Returns 200 if valid, 409 if corruption is detected.

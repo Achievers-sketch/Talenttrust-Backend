@@ -283,4 +283,52 @@ export class DataArchivalService {
       byStorageType: {},
     };
   }
+
+  /**
+   * Export data in specified format for compliance
+   * 
+   * @param {string} dataId - Data identifier
+   * @param {'json' | 'csv'} format - Export format
+   * @param {ArchivalStorageType} [fromLocation] - Archival storage type
+   * @returns {Promise<string>} Serialized data
+   */
+  async exportData(
+    dataId: string,
+    format: 'json' | 'csv',
+    fromLocation?: ArchivalStorageType,
+  ): Promise<string> {
+    const data = await this.getArchivedData(dataId, fromLocation);
+    if (!data) {
+      throw new Error(`Data not found for export: ${dataId}`);
+    }
+
+    if (format === 'json') {
+      return JSON.stringify(data, null, 2);
+    } else {
+      // Basic CSV implementation
+      const headers = ['id', 'entityType', 'classification', 'createdAt', 'expiresAt', 'isArchived', 'archivedAt'];
+      const values = [
+        data.id,
+        data.entityType,
+        data.classification,
+        data.createdAt.toISOString(),
+        data.expiresAt.toISOString(),
+        data.isArchived.toString(),
+        data.archivedAt?.toISOString() || '',
+      ];
+
+      // Flatten data payload if it's an object
+      if (typeof data.data === 'object' && data.data !== null) {
+        Object.entries(data.data).forEach(([key, val]) => {
+          headers.push(`data.${key}`);
+          values.push(String(val));
+        });
+      } else {
+        headers.push('data');
+        values.push(String(data.data));
+      }
+
+      return `${headers.join(',')}\n${values.join(',')}`;
+    }
+  }
 }

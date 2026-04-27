@@ -11,7 +11,8 @@ import {
   JobType,
   JobPayload,
   JobResult,
-  JobEnqueueOptions,
+  AddJobOptions,
+  AddJobResult,
   FailedJobEntry,
   FailedJobQuery,
   ReplayJobResult,
@@ -127,23 +128,18 @@ export class QueueManager {
   public async addJob(
     jobType: JobType,
     payload: JobPayload,
-    options?: JobEnqueueOptions
-  ): Promise<string> {
+    options?: AddJobOptions
+  ): Promise<AddJobResult> {
     const queue = this.queues.get(jobType);
     if (!queue) {
       throw new Error(`Queue for ${jobType} not initialized`);
     }
 
-    const { priority, delay, dedupeKey, dedupeTtl } = options ?? {};
-
-    const bullOptions: JobsOptions = { priority, delay };
+    const { priority, delay, attempts, dedupeKey } = options ?? {};
+    const bullOptions: JobsOptions = { priority, delay, attempts };
 
     if (dedupeKey) {
       bullOptions.jobId = dedupeKey;
-      bullOptions.deduplication = {
-        id: dedupeKey,
-        ...(dedupeTtl !== undefined && { ttl: dedupeTtl }),
-      };
     }
 
     // Pre-check: determine if an active/waiting/delayed job already exists.

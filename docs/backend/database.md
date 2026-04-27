@@ -47,6 +47,7 @@ Set `DB_PATH=:memory:` to use an **in-memory** database (data is lost on process
 | `freelancer_id` | TEXT    | NOT NULL, REFERENCES users(id)                                           |
 | `amount`        | INTEGER | NOT NULL, CHECK >= 0 (stored in stroops; 1 XLM = 10,000,000 stroops)     |
 | `status`        | TEXT    | NOT NULL, CHECK IN ('draft','active','completed','disputed','cancelled') |
+| `version`       | INTEGER | NOT NULL, default `0`, CHECK >= 0 (optimistic concurrency control)        |
 | `created_at`    | TEXT    | NOT NULL (ISO-8601)                                                      |
 
 **Indexes**: `idx_contracts_client_id`, `idx_contracts_freelancer_id`, `idx_contracts_status`.
@@ -90,7 +91,25 @@ const repo = new UserRepository(getDb());
 
 ## Migrations
 
-Schema is applied automatically via `runMigrations()` inside `database.ts` on every startup. All statements use `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` so re-runs are **idempotent**.
+Schema migrations run automatically on startup via `runMigrations()` in `src/db/migrations.ts`.
+
+### Versioning model
+
+- `schema_version` table tracks each applied migration version (`INTEGER PRIMARY KEY`) and timestamp.
+- Migrations are ordered, immutable, and sequential (`1..N`).
+- Startup applies only missing versions, making reruns idempotent and safe for repeated deploys.
+
+### Safety guarantees
+
+- Each migration runs inside a SQLite transaction.
+- If a migration throws, SQLite rolls back that migration's partial changes.
+- Failed migrations are not recorded in `schema_version`, so recovery is deterministic.
+
+### Rollback plan
+
+- For urgent rollback to previous app code, restore a DB snapshot made before deployment.
+- Because migrations are additive and idempotent, redeploying the fixed build safely resumes from the last applied version.
+- Keep migration files immutable; create a new migration to correct prior schema changes instead of editing old ones.
 
 ---
 

@@ -4,6 +4,7 @@ import { ContractRepository } from '../repositories/contractRepository';
 import { getDb } from '../db/database';
 import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
+import { NotFoundError } from '../errors/appError';
 import { parsePaginationQuery, applyPagination } from '../utils/pagination';
 
 const contractsService = new ContractsService(new ContractRepository(getDb()));
@@ -18,6 +19,10 @@ interface ApiResponse<T = any> {
   error?: string;
 }
 
+interface ContractIdParams {
+  id: string;
+}
+
 /**
  * Presentation layer for Contracts.
  * Handles HTTP requests, extracts parameters, and formulates responses.
@@ -28,20 +33,18 @@ export class ContractsController {
   /**
    * GET /api/v1/contracts
    * Fetch a paginated list of escrow contracts.
-   *
-   * Query params:
-   *   page  - positive integer, defaults to 1
-   *   limit - positive integer 1..100, defaults to 20
-   *
-   * Returns 400 if page or limit are invalid (non-integer, negative, or out of range).
    */
   public static async getContracts(req: Request, res: Response, next: NextFunction) {
     try {
       const pagination = parsePaginationQuery((req.query ?? {}) as Record<string, unknown>);
       if (!pagination.ok) {
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         res.status(400).json({
-          status: 'error',
-          message: pagination.error,
+          error: {
+            code: 'bad_request',
+            message: pagination.error,
+            requestId,
+          },
         });
         return;
       }
@@ -72,10 +75,9 @@ export class ContractsController {
    */
   public static async getContractById(req: Request, res: Response, next: NextFunction) {
     try {
-      const contract = await contractsService.getContractById(req.params.id);
+      const contract = await contractsService.getContractById(req.params.id!);
       if (!contract) {
-        res.status(404).json({ status: 'error', error: { code: 'not_found', message: 'Not found' } });
-        return;
+        throw new NotFoundError('The requested resource was not found');
       }
       res.status(200).json({ status: 'success', data: contract });
     } catch (error) {
@@ -92,7 +94,7 @@ export class ContractsController {
       const data: CreateContractDto = req.body;
       const newContract = await contractsService.createContract(data);
       
-      const response: ApiResponse<any> = {
+      const response: ApiResponse = {
         status: 'success',
         data: newContract,
         message: 'Contract created successfully',
@@ -100,6 +102,10 @@ export class ContractsController {
       
       res.status(201).json(response);
     } catch (error) {
+      if (error instanceof ContractBoundsError) {
+        res.status(422).json({ status: 'error', message: error.message });
+        return;
+      }
       next(error);
     }
   }
@@ -110,12 +116,12 @@ export class ContractsController {
    */
   public static async updateContract(req: Request, res: Response, next: NextFunction) {
     try {
-      const { id } = req.params;
+      const { id } = req.params as unknown as ContractIdParams;
       const updateData: UpdateContractDto = req.body;
       
       const updatedContract = await contractsService.updateContract(id, updateData);
       
-      const response: ApiResponse<any> = {
+      const response: ApiResponse = {
         status: 'success',
         data: updatedContract,
         message: 'Contract updated successfully',
@@ -123,6 +129,10 @@ export class ContractsController {
       
       res.status(200).json(response);
     } catch (error) {
+      if (error instanceof ContractBoundsError) {
+        res.status(422).json({ status: 'error', message: error.message });
+        return;
+      }
       next(error);
     }
   }
@@ -133,7 +143,7 @@ export class ContractsController {
    */
   public static async deleteContract(req: Request, res: Response, next: NextFunction) {
     try {
-      const { id } = req.params;
+      const { id } = req.params as unknown as ContractIdParams;
       await contractsService.deleteContract(id);
       
       const response: ApiResponse = {
@@ -163,7 +173,14 @@ export class ContractsController {
       res.status(200).json(response);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
-        res.status(422).json({ status: 'error', message: error.message });
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+        res.status(422).json({
+          error: {
+            code: 'bad_request',
+            message: error.message,
+            requestId,
+          },
+        });
         return;
       }
       next(error);

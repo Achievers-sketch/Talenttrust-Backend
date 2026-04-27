@@ -2,15 +2,11 @@ import { Router } from 'express';
 import { ContractsController } from '../controllers/contracts.controller';
 import { validateSchema } from '../middleware/validate.middleware';
 import { createContractSchema, updateContractSchema } from '../modules/contracts/dto/contract.dto';
-import { requireAuth, requirePermission } from '../middleware/authorization';
-import { z } from 'zod';
-import { getDb } from '../db/database';
-import { ContractRepository } from '../repositories/contractRepository';
-import { ContractsService } from '../services/contracts.service';
 
 const router = Router();
 
-router.use(requireAuth);
+router.get('/bounds', ContractsController.getBounds);
+router.get('/stats', ContractsController.getContractStats);
 
 const contractsService = new ContractsService(new ContractRepository(getDb()));
 
@@ -42,14 +38,9 @@ router.post(
   ContractsController.createContract,
 );
 
-router.patch(
-  '/:id',
-  validateSchema(uuidParamSchema),
-  requirePermission('contracts', 'update', contractOwnerResolver),
-  validateSchema(updateContractSchema),
-  ContractsController.updateContract,
-);
+// OCC-aware update: validate version field before delegating to controller
+router.patch('/:id', validateSchema(updateContractSchema), ContractsController.updateContract);
 
-router.delete('/:id', validateSchema(uuidParamSchema), requirePermission('contracts', 'delete', contractOwnerResolver), ContractsController.deleteContract);
+router.delete('/:id', ContractsController.deleteContract);
 
 export default router;

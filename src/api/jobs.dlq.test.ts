@@ -54,7 +54,7 @@ describe('Jobs DLQ API', () => {
   });
 
   it('allows admin to view failed jobs and writes audit entry', async () => {
-    const failedJobId = await queueManager.addJob(
+    const { jobId: failedJobId } = await queueManager.addJob(
       JobType.EMAIL_NOTIFICATION,
       {
         to: 'broken-email-address',
@@ -79,7 +79,7 @@ describe('Jobs DLQ API', () => {
   });
 
   it('reprocesses a failed job with dedupe and audit logging', async () => {
-    const failedJobId = await queueManager.addJob(
+    const { jobId: failedJobId } = await queueManager.addJob(
       JobType.EMAIL_NOTIFICATION,
       {
         to: 'broken-email-address',

@@ -16,7 +16,7 @@
 
 import type { AuditEntry, AuditQuery, AuditSeverity, CreateAuditEntryInput, IntegrityReport } from './types';
 import type { AuditAction } from './types';
-import { auditStore, AuditStore } from './store';
+import { createDefaultAuditRepository, type AuditLogRepository } from './repository';
 
 export interface AuditServiceOptions {
   /** Reserved for future use. */
@@ -44,7 +44,7 @@ export interface AuditServiceOptions {
  */
 export class AuditService {
   constructor(
-    private readonly store: AuditStore = auditStore,
+    private readonly repository: AuditLogRepository = createDefaultAuditRepository(),
     private readonly options: AuditServiceOptions = {},
   ) {}
 
@@ -57,7 +57,7 @@ export class AuditService {
    */
   log(input: CreateAuditEntryInput): AuditEntry {
     try {
-      return this.store.append(input);
+      return this.repository.append(input);
     } catch (err) {
       console.error('[AuditService] Failed to persist audit entry:', err);
       throw err;
@@ -159,21 +159,28 @@ export class AuditService {
    * @returns Matching entries in insertion order.
    */
   query(query: AuditQuery = {}): AuditEntry[] {
-    return this.store.query(query);
+    return this.repository.query(query);
+  }
+
+  /**
+   * Streams audit entries for export use cases without loading all rows.
+   */
+  stream(query: AuditQuery = {}): IterableIterator<AuditEntry> {
+    return this.repository.stream(query);
   }
 
   /**
    * Retrieves a single audit entry by ID.
    */
   getById(id: string): AuditEntry | undefined {
-    return this.store.getById(id);
+    return this.repository.getById(id);
   }
 
   /**
    * Returns the total number of audit entries.
    */
   count(): number {
-    return this.store.count();
+    return this.repository.count();
   }
 
   /**
@@ -183,7 +190,7 @@ export class AuditService {
    * @returns IntegrityReport — escalate immediately if valid === false.
    */
   verifyIntegrity(): IntegrityReport {
-    return this.store.verifyIntegrity();
+    return this.repository.verifyIntegrity();
   }
 }
 

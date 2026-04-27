@@ -13,5 +13,14 @@ export {
 	FailedJobEntry,
 	FailedJobQuery,
 	ReplayJobResult,
+	AddJobOptions,
+	AddJobResult,
 } from './types';
 export { queueConfig, getRedisConfig } from './config';
+export {
+	WebhookDLQEntry,
+	WebhookDLQQuery,
+	getWebhookDLQStorage,
+	clearWebhookDLQInstance,
+} from './webhook-dlq';
+export { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from './webhook-retry-policy';
