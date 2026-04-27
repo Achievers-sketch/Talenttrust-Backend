@@ -1,7 +1,7 @@
 {
   "name": "talenttrust-backend",
   "version": "0.1.0",
-  "description": "TalentTrust API Gateway and services",
+  "description": "TalentTrust API Gateway and services with idempotent contract event ingestion",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -15,6 +15,7 @@
     "deploy:status": "cross-env MODE=deploy ts-node src/deploy.ts status",
     "test": "jest",
     "test:ci": "jest --ci --coverage --runInBand --silent --detectOpenHandles",
+    "test:watch": "jest --watch",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "audit:ci": "npm audit --audit-level=high",
@@ -26,6 +27,8 @@
   "engines": {
     "node": ">=18"
   },
+  "keywords": ["blockchain", "events", "ingestion", "idempotency", "talenttrust", "api"],
+  "author": "Talenttrust Team",
   "license": "MIT",
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.4",
@@ -42,6 +45,7 @@
     "pino": "^9.5.0",
     "prom-client": "^15.1.3",
     "uuid": "^14.0.0",
+    "winston": "^3.10.0",
     "xss": "^1.0.15",
     "yaml": "^2.8.3",
     "zod": "^3.23.8"
