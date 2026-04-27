@@ -16,6 +16,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport } from './types';
+import type { AuditLogRepository } from './repository';
 
 /** Sentinel hash used as the previousHash of the very first entry. */
 export const GENESIS_HASH = 'GENESIS';
@@ -54,7 +55,7 @@ export function computeEntryHash(
  * const report = store.verifyIntegrity();
  * ```
  */
-export class AuditStore {
+export class AuditStore implements AuditLogRepository {
   /** Internal append-only log. Never mutate directly. */
   private readonly log: AuditEntry[] = [];
 
@@ -137,6 +138,13 @@ export class AuditStore {
     });
 
     return results.slice(offset, offset + limit);
+  }
+
+  *stream(query: AuditQuery = {}): IterableIterator<AuditEntry> {
+    const rows = this.query(query);
+    for (const row of rows) {
+      yield row;
+    }
   }
 
   /**

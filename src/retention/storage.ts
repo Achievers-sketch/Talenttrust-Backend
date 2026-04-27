@@ -209,11 +209,10 @@ export class StorageManager {
 
   /**
    * Get provider for storage type
-   * @private
    * @param {ArchivalStorageType} storageType - Storage type
    * @returns {IStorageProvider}
    */
-  private getProvider(storageType: ArchivalStorageType): IStorageProvider {
+  public getProvider(storageType: ArchivalStorageType): IStorageProvider {
     switch (storageType) {
       case ArchivalStorageType.COLD_STORAGE:
       case ArchivalStorageType.ENCRYPTED_ARCHIVE:

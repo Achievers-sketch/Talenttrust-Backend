@@ -314,7 +314,7 @@ The backend uses an embedded **SQLite** database (via `better-sqlite3`) — no e
 | -------------------- | ---------------- | ----------------------------------------------------------- |
 | `DB_PATH`            | `talenttrust.db` | Path to the SQLite file. Use `:memory:` for ephemeral mode. |
 
-Schema migrations run automatically on startup. See [`docs/backend/database.md`](docs/backend/database.md) for full documentation: schema, repository API, configuration, and security notes.
+Schema migrations run automatically on startup and record applied versions in `schema_version`. See [`docs/backend/database.md`](docs/backend/database.md) for full documentation: schema, versioning, rollback guidance, repository API, configuration, and security notes.
 
 ## Circuit Breaker
 

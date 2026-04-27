@@ -1,5 +1,5 @@
 import { Server } from 'http';
-import logger from './logger';
+import { logger } from './logger';
 
 /**
  * Minimal interface satisfied by a BullMQ Worker (and by test fakes).
@@ -85,14 +85,14 @@ export function registerShutdownHandlers(
     if (shuttingDown) return;
     shuttingDown = true;
 
-    logger.info({ signal }, 'shutdown_initiated');
+    logger.info('shutdown_initiated', { signal });
 
     // ── 1. HTTP server ──────────────────────────────────────────────────────
     try {
       await closeHttpServer(server, httpTimeoutMs);
       logger.info('http_drained');
     } catch (err) {
-      logger.warn({ err }, 'http_drain_timeout');
+      logger.warn('http_drain_timeout', { err });
     }
 
     // ── 2. BullMQ workers ───────────────────────────────────────────────────
@@ -100,9 +100,9 @@ export function registerShutdownHandlers(
       workers.map(async (w) => {
         try {
           await closeWorker(w, workerTimeoutMs);
-          logger.info({ worker: w.name }, 'bullmq_worker_closed');
+          logger.info('bullmq_worker_closed', { worker: w.name });
         } catch (err) {
-          logger.warn({ worker: w.name, err }, 'bullmq_worker_timeout');
+          logger.warn('bullmq_worker_timeout', { worker: w.name, err });
         }
       }),
     );
@@ -112,9 +112,9 @@ export function registerShutdownHandlers(
       connections.map(async (conn) => {
         try {
           await conn.close();
-          logger.info({ connection: conn.name }, 'connection_closed');
+          logger.info('connection_closed', { connection: conn.name });
         } catch (err) {
-          logger.warn({ connection: conn.name, err }, 'connection_close_error');
+          logger.warn('connection_close_error', { connection: conn.name, err });
         }
       }),
     );

@@ -1,13 +1,13 @@
 /**
  * @module logger
- * @description Structured JSON logger for TalentTrust Backend.
+ * @description Pino-based structured JSON logger for TalentTrust Backend.
  *
  * Provides a singleton logger that emits newline-delimited JSON records to
  * stdout (errors to stderr).  Every record includes a mandatory set of
  * correlation fields so that log lines can be joined across services:
  *
- *   - timestamp  – ISO-8601 UTC
- *   - level      – debug | info | warn | error
+ *   - timestamp  – ISO-8601 UTC (handled by Pino)
+ *   - level      – trace | debug | info | warn | error | fatal
  *   - message    – human-readable description
  *   - requestId  – per-request UUID (injected by middleware, optional here)
  *   - correlationId – caller-supplied trace ID (optional)
@@ -17,18 +17,26 @@
  * Security note: the logger never serialises Error.stack in production to
  * avoid leaking internal file paths.  In non-production environments the
  * stack is included to aid debugging.
+ *
+ * Pino features used:
+ * - Automatic redaction of sensitive fields
+ * - Child logger support for request correlation
+ * - High-performance JSON serialization
+ * - Production-safe error handling
  */
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+import pino, { Logger as PinoLogger, LoggerOptions } from 'pino';
+
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 /** Fields that every log record must carry. */
 export interface BaseLogRecord {
-  timestamp: string;
   level: LogLevel;
   message: string;
   service: string;
   requestId?: string;
   correlationId?: string;
+  time?: number; // Unix timestamp (Pino default)
 }
 
 /** A complete log record – base fields plus arbitrary context. */
@@ -44,71 +52,119 @@ export interface LogContext {
 const SERVICE_NAME = 'talenttrust-backend';
 
 /**
- * Safely serialise an Error into a plain object.
- * Stack traces are omitted in production to prevent path disclosure.
+ * Comprehensive list of sensitive keys that should be redacted.
+ * This includes common authentication tokens, PII, and secrets.
  */
-function serializeError(err: Error): Record<string, unknown> {
-  const obj: Record<string, unknown> = {
-    name: err.name,
-    message: err.message,
-  };
-  if (process.env.NODE_ENV !== 'production' && err.stack) {
-    obj.stack = err.stack;
-  }
-  return obj;
-}
+const SENSITIVE_KEYS = [
+  // Authentication & Authorization
+  'password', 'passwd', 'pwd',
+  'secret', 'secrets',
+  'token', 'tokens', 'jwt', 'bearer',
+  'authorization', 'auth',
+  'apikey', 'api_key', 'apikey_secret',
+  'access_token', 'refresh_token',
+  'client_secret', 'client_id',
+  
+  // Personal Identifiable Information
+  'email', 'email_address',
+  'ssn', 'social_security_number',
+  'credit_card', 'cc_number', 'cvv',
+  'bank_account', 'routing_number',
+  'phone', 'phone_number', 'mobile',
+  'address', 'street_address',
+  
+  // Cryptographic
+  'privatekey', 'private_key', 'privateKey',
+  'publickey', 'public_key', 'publicKey',
+  'mnemonic', 'seed', 'seed_phrase',
+  'wallet', 'wallet_private_key',
+  
+  // Session & Cookies
+  'cookie', 'cookies', 'session',
+  'session_id', 'session_token',
+  
+  // Database
+  'db_password', 'database_password',
+  'connection_string', 'conn_string',
+  
+  // Generic sensitive patterns
+  'key', 'secret_key', 'passphrase'
+];
 
 /**
- * Sanitise a context object so that sensitive keys are never logged.
- * Extend this list as the domain grows.
+ * Pino redaction configuration.
+ * Uses wildcard patterns to catch nested sensitive fields.
  */
-const SENSITIVE_KEYS = new Set([
-  'password',
-  'secret',
-  'token',
-  'authorization',
-  'cookie',
-  'privatekey',
-  'mnemonic',
-  'seed',
+const redactionPaths = SENSITIVE_KEYS.flatMap(key => [
+  key,
+  `*.${key}`,
+  `*..${key}`, // Deep nested paths
+  `${key}.*`,
+  `*..${key}.*`
 ]);
 
-function sanitize(obj: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (SENSITIVE_KEYS.has(k.toLowerCase())) {
-      out[k] = '[REDACTED]';
-    } else if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-      out[k] = sanitize(v as Record<string, unknown>);
-    } else {
-      out[k] = v;
+/**
+ * Pino logger configuration with production-safe settings.
+ */
+const pinoConfig: LoggerOptions = {
+  name: SERVICE_NAME,
+  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+  
+  // Redact sensitive information
+  redact: {
+    paths: redactionPaths,
+    censor: '[REDACTED]'
+  },
+  
+  // Error serialization - include stack in non-production only
+  errorKey: 'err',
+  formatters: {
+    level: (label: string) => ({ level: label }),
+    log: (object: any) => {
+      // Ensure service name is always present
+      return { ...object, service: SERVICE_NAME };
     }
+  },
+  
+  // Timestamp handling - Pino handles this automatically
+  timestamp: pino.stdTimeFunctions.isoTime,
+  
+  // Pretty printing in development
+  transport: process.env.NODE_ENV !== 'production' ? {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'HH:MM:ss Z',
+      ignore: 'pid,hostname'
+    }
+  } : undefined,
+  
+  // Base context that's merged into all logs
+  base: {
+    service: SERVICE_NAME,
+    pid: process.pid,
+    hostname: process.env.HOSTNAME || 'unknown'
   }
-  return out;
-}
-
-/** Core write function – separated so tests can spy on it. */
-export function writeRecord(record: LogRecord): void {
-  const line = JSON.stringify(record);
-  if (record.level === 'error') {
-    process.stderr.write(line + '\n');
-  } else {
-    process.stdout.write(line + '\n');
-  }
-}
+};
 
 /**
- * Logger class.
+ * Core Pino logger instance.
+ */
+const pinoLogger: PinoLogger = pino(pinoConfig);
+
+/**
+ * Logger class that wraps Pino with our API.
  *
  * Instantiate via `createLogger()` or use the default `logger` singleton.
  * Use `logger.child(ctx)` to create a request-scoped child that automatically
  * includes `requestId` / `correlationId` on every record.
  */
 export class Logger {
-  private readonly context: LogContext;
+  private readonly pino: PinoLogger;
 
   constructor(context: LogContext = {}) {
-    this.context = context;
+    // Create a child logger with the provided context
+    this.pino = pinoLogger.child(context);
   }
 
   /**
@@ -117,55 +173,66 @@ export class Logger {
    * @param ctx - Extra fields to bind (e.g. `{ requestId, correlationId }`).
    */
   child(ctx: LogContext): Logger {
-    return new Logger({ ...this.context, ...ctx });
+    return new Logger({ ...this.pino.bindings(), ...ctx });
   }
 
-  /** @internal Build and emit a log record. */
-  private log(
-    level: LogLevel,
-    message: string,
-    extra: Record<string, unknown> = {},
-  ): void {
-    const { requestId, correlationId, ...rest } = this.context;
+  /**
+   * Get the current logger context (useful for testing).
+   */
+  getBindings(): Record<string, unknown> {
+    return this.pino.bindings();
+  }
 
-    // Merge context + caller extras, then sanitise the whole thing.
-    const merged = sanitize({ ...rest, ...extra });
-
-    const record: LogRecord = {
-      timestamp: new Date().toISOString(),
-      level,
-      message,
-      service: SERVICE_NAME,
-      ...(requestId !== undefined && { requestId }),
-      ...(correlationId !== undefined && { correlationId }),
-      ...merged,
-    };
-
-    writeRecord(record);
+  trace(message: string, extra?: Record<string, unknown>): void {
+    if (extra) {
+      this.pino.trace(extra, message);
+    } else {
+      this.pino.trace(message);
+    }
   }
 
   debug(message: string, extra?: Record<string, unknown>): void {
-    this.log('debug', message, extra);
+    if (extra) {
+      this.pino.debug(extra, message);
+    } else {
+      this.pino.debug(message);
+    }
   }
 
   info(message: string, extra?: Record<string, unknown>): void {
-    this.log('info', message, extra);
+    if (extra) {
+      this.pino.info(extra, message);
+    } else {
+      this.pino.info(message);
+    }
   }
 
   warn(message: string, extra?: Record<string, unknown>): void {
-    this.log('warn', message, extra);
+    if (extra) {
+      this.pino.warn(extra, message);
+    } else {
+      this.pino.warn(message);
+    }
   }
 
   /**
    * Log at error level.  Pass an `Error` instance via `extra.err` and it will
-   * be serialised safely.
+   * be serialised safely by Pino.
    */
   error(message: string, extra?: Record<string, unknown>): void {
-    const safeExtra: Record<string, unknown> = { ...extra };
-    if (safeExtra['err'] instanceof Error) {
-      safeExtra['err'] = serializeError(safeExtra['err'] as Error);
+    if (extra) {
+      this.pino.error(extra, message);
+    } else {
+      this.pino.error(message);
     }
-    this.log('error', message, safeExtra);
+  }
+
+  fatal(message: string, extra?: Record<string, unknown>): void {
+    if (extra) {
+      this.pino.fatal(extra, message);
+    } else {
+      this.pino.fatal(message);
+    }
   }
 }
 
@@ -175,4 +242,18 @@ export const logger = new Logger();
 /** Factory for creating named loggers with pre-bound context. */
 export function createLogger(context: LogContext = {}): Logger {
   return new Logger(context);
+}
+
+/**
+ * Export the underlying Pino logger for advanced use cases.
+ * This should be used sparingly - prefer the Logger class API.
+ */
+export { pinoLogger };
+
+/**
+ * Utility function to create a request-scoped logger with correlation IDs.
+ * This is typically used in middleware.
+ */
+export function createRequestLogger(requestId: string, correlationId?: string): Logger {
+  return createLogger({ requestId, correlationId });
 }

@@ -283,3 +283,51 @@ describe('loadConfig (appConfiguration)', () => {
     });
   });
 });
+
+describe('loadConfig — circuit breaker config', () => {
+  const savedEnv = { ...process.env };
+
+  afterEach(() => {
+    delete process.env.CB_FAILURE_THRESHOLD;
+    delete process.env.CB_SUCCESS_THRESHOLD;
+    delete process.env.CB_TIMEOUT_MS;
+  });
+
+  afterAll(() => {
+    process.env = savedEnv;
+  });
+
+  it('uses defaults when CB env vars are absent', () => {
+    const cfg = loadConfig({});
+    expect(cfg.circuitBreaker).toEqual({
+      failureThreshold: 5,
+      successThreshold: 1,
+      timeoutMs: 30_000,
+    });
+  });
+
+  it('reads CB_FAILURE_THRESHOLD from env', () => {
+    const cfg = loadConfig({ CB_FAILURE_THRESHOLD: '10' });
+    expect(cfg.circuitBreaker.failureThreshold).toBe(10);
+  });
+
+  it('reads CB_SUCCESS_THRESHOLD from env', () => {
+    const cfg = loadConfig({ CB_SUCCESS_THRESHOLD: '3' });
+    expect(cfg.circuitBreaker.successThreshold).toBe(3);
+  });
+
+  it('reads CB_TIMEOUT_MS from env', () => {
+    const cfg = loadConfig({ CB_TIMEOUT_MS: '60000' });
+    expect(cfg.circuitBreaker.timeoutMs).toBe(60_000);
+  });
+
+  it('clamps CB_FAILURE_THRESHOLD to minimum of 1', () => {
+    const cfg = loadConfig({ CB_FAILURE_THRESHOLD: '0' });
+    expect(cfg.circuitBreaker.failureThreshold).toBe(1);
+  });
+
+  it('clamps CB_TIMEOUT_MS to minimum of 1000', () => {
+    const cfg = loadConfig({ CB_TIMEOUT_MS: '0' });
+    expect(cfg.circuitBreaker.timeoutMs).toBe(1_000);
+  });
+});

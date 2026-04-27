@@ -106,7 +106,6 @@ describe('WebhookService', () => {
   });
 
   it('handles webhook delivery failure with HMAC signing', async () => {
-    const mockSignature = 'sha256=abcdef1234567890';
     const mockTimestamp = 1640995200000;
     
     mockedCreateWebhookSignature.mockReturnValue({
@@ -142,7 +141,6 @@ describe('WebhookService', () => {
   });
 
   it('moves webhook with HMAC signing to DLQ after max retries', async () => {
-    const mockSignature = 'sha256=abcdef1234567890';
     const mockTimestamp = 1640995200000;
     
     mockedCreateWebhookSignature.mockReturnValue({

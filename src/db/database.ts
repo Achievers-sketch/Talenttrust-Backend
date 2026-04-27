@@ -17,6 +17,7 @@
 
 import Database from "better-sqlite3";
 import path from "path";
+import { runMigrations } from "./migrations";
 
 let instance: Database.Database | null = null;
 
@@ -53,54 +54,3 @@ export function closeDb(): void {
   }
 }
 
-/**
- * Runs all DDL migrations against the provided database connection.
- * Each statement uses IF NOT EXISTS so re-runs are idempotent.
- *
- * @param db - An open better-sqlite3 Database instance.
- */
-function runMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id          TEXT    PRIMARY KEY,
-      username    TEXT    NOT NULL UNIQUE,
-      email       TEXT    NOT NULL UNIQUE,
-      role        TEXT    NOT NULL DEFAULT 'client'
-                          CHECK (role IN ('client', 'freelancer', 'both')),
-      created_at  TEXT    NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS contracts (
-      id            TEXT    PRIMARY KEY,
-      title         TEXT    NOT NULL,
-      client_id     TEXT    NOT NULL REFERENCES users(id),
-      freelancer_id TEXT    NOT NULL REFERENCES users(id),
-      amount        INTEGER NOT NULL CHECK (amount >= 0),
-      status        TEXT    NOT NULL DEFAULT 'draft'
-                            CHECK (status IN (
-                              'draft', 'active', 'completed', 'disputed', 'cancelled'
-                            )),
-      version       INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
-      created_at    TEXT    NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_contracts_client_id
-      ON contracts(client_id);
-
-    CREATE INDEX IF NOT EXISTS idx_contracts_freelancer_id
-      ON contracts(freelancer_id);
-
-    CREATE INDEX IF NOT EXISTS idx_contracts_status
-      ON contracts(status);
-  `);
-
-  // Migration guard: add version column to existing databases that pre-date OCC.
-  // PRAGMA table_info returns one row per column; if 'version' is absent we add it.
-  const columns = db.pragma("table_info(contracts)") as Array<{ name: string }>;
-  const hasVersion = columns.some((col) => col.name === "version");
-  if (!hasVersion) {
-    db.exec(
-      "ALTER TABLE contracts ADD COLUMN version INTEGER NOT NULL DEFAULT 0"
-    );
-  }
-}

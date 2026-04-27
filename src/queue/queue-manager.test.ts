@@ -7,7 +7,6 @@
 
 import { QueueManager } from './queue-manager';
 import { JobType } from './types';
-import { RetryPolicyManager } from './retry-manager';
 
 describe('QueueManager', () => {
   let queueManager: QueueManager;
@@ -213,7 +212,7 @@ describe('QueueManager', () => {
     });
 
     it('should list failed jobs', async () => {
-      const failedJobId = await queueManager.addJob(
+      const { jobId: failedJobId } = await queueManager.addJob(
         JobType.EMAIL_NOTIFICATION,
         {
           to: 'not-an-email',
@@ -239,7 +238,7 @@ describe('QueueManager', () => {
     });
 
     it('should reprocess failed jobs with dedupe', async () => {
-      const failedJobId = await queueManager.addJob(
+      const { jobId: failedJobId } = await queueManager.addJob(
         JobType.EMAIL_NOTIFICATION,
         {
           to: 'still-invalid',

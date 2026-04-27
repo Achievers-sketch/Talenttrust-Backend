@@ -6,6 +6,7 @@
  */
 
 import { getDb, closeDb } from "./database";
+import { getLatestSchemaVersion } from "./migrations";
 
 afterEach(() => {
   closeDb();
@@ -42,6 +43,23 @@ describe("getDb", () => {
       )
       .get() as { name: string } | undefined;
     expect(row?.name).toBe("users");
+  });
+
+  it("creates a schema_version table and applies latest version", () => {
+    const db = getDb(":memory:");
+    const row = db
+      .prepare<[], { name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'",
+      )
+      .get();
+    expect(row?.name).toBe("schema_version");
+
+    const versionRow = db
+      .prepare<[], { version: number }>(
+        "SELECT MAX(version) AS version FROM schema_version",
+      )
+      .get();
+    expect(versionRow?.version).toBe(getLatestSchemaVersion());
   });
 
   it("creates an index on contracts.client_id", () => {

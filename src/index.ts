@@ -7,10 +7,13 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { createApp, attachTerminalHandlers } from './app';
-import { JobType, JobPayload, QueueManager } from './queue';
+import { createApp, attachTerminalHandlers, shutdownRateLimitStore } from './app';
+import { JobType, JobPayload, QueueManager, AddJobOptions } from './queue';
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth';
 import { auditService } from './audit/service';
+import { validateEnvironment } from './config/environment';
+import { createRateLimiter } from './middleware/rateLimiter';
+import { rateLimitConfig } from './config/rateLimit';
 
 // Validate environment at startup
 validateEnvironment();

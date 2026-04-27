@@ -62,26 +62,22 @@ export const requireContractAccess = async (req: AuthenticatedRequest, res: Resp
     return res.status(400).json({ error: 'Contract ID required' });
   }
 
-  // For demo purposes, we'll allow access to all contracts
-  // In production, this would check if user has access to the contract
+  // Admins have full access
   if (req.user.role === 'admin') {
     return next();
   }
 
-  // Check if contract exists and user has access
+  // Check if contract exists
   const contract = await database.getContractById(contractId);
   if (!contract) {
-    // For testing purposes, allow access to non-existent contracts
-    // In production, this would return 404
-    return next();
+    return res.status(400).json({ error: 'Contract not found' });
   }
 
-  // For demo, allow access if user created the contract or is admin
+  // Check if user has access (creator only for now)
   if (contract.created_by === req.user.id) {
     return next();
   }
 
-  // For demo purposes, allow all authenticated users to access contracts
-  // In production, this would return 403 for unauthorized access
-  return next();
+  return res.status(403).json({ error: 'Access denied: You do not have permission to access this contract' });
 };
+

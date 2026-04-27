@@ -5,7 +5,7 @@ import axios, {
   AxiosResponse,
   AxiosError,
 } from 'axios';
-import logger from './logger';
+import { logger } from './logger';
 import { redactHeaders, redactUrl, normalizeUrlPath } from './redact';
 
 // Symbol used to stamp the request start time onto the config object
@@ -58,6 +58,7 @@ export function createHttpClient(
     config[START_TIME] = Date.now();
 
     logger.debug(
+      'outgoing_request',
       {
         dependency_name: dependencyName,
         request_method: (config.method ?? 'GET').toUpperCase(),
@@ -67,8 +68,7 @@ export function createHttpClient(
         request_headers: redactHeaders(
           (config.headers as Record<string, string | string[] | undefined>) ?? {},
         ),
-      },
-      'outgoing_request',
+      }
     );
 
     return config;
@@ -81,14 +81,14 @@ export function createHttpClient(
       const timingMs = Date.now() - (config[START_TIME] ?? Date.now());
 
       logger.info(
+        'http_response',
         buildLogEntry(
           dependencyName,
           config.method ?? 'GET',
           config.url ?? '',
           timingMs,
           response.status,
-        ),
-        'http_response',
+        )
       );
 
       return response;
@@ -105,6 +105,7 @@ export function createHttpClient(
         ?? 'UNKNOWN_ERROR';
 
       logger.error(
+        'http_error',
         buildLogEntry(
           dependencyName,
           config.method ?? 'GET',
@@ -112,8 +113,7 @@ export function createHttpClient(
           timingMs,
           error.response?.status,
           safeError,
-        ),
-        'http_error',
+        )
       );
 
       return Promise.reject(error);
