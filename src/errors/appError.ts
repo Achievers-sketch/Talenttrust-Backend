@@ -54,6 +54,33 @@ export class VersionConflictError extends AppError {
 }
 
 /**
+ * Forbidden error - user lacks permission or violates business rules.
+ */
+export class ForbiddenError extends AppError {
+  constructor(message = 'Forbidden') {
+    super(403, 'forbidden', message);
+  }
+}
+
+/**
+ * Conflict error - resource state conflict (e.g., duplicate entry).
+ */
+export class ConflictError extends AppError {
+  constructor(message = 'Conflict') {
+    super(409, 'conflict', message);
+  }
+}
+
+/**
+ * Validation error - business rule validation failure.
+ */
+export class ValidationError extends AppError {
+  constructor(message = 'Validation error') {
+    super(422, 'validation_error', message);
+  }
+}
+
+/**
  * Normalizes thrown errors into a safe and consistent API response payload.
  */
 export function mapErrorToPayload(

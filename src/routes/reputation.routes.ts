@@ -5,6 +5,8 @@ import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto
 import { validateSchema } from '../middleware/validate.middleware';
 import { requireAuth, requirePermission } from '../middleware/authorization';
 import { z } from 'zod';
+import { authenticateMiddleware } from '../auth/authenticate';
+import { requirePermission } from '../auth/middleware';
 
 const router = Router();
 
@@ -36,8 +38,9 @@ registry.registerPath({
                 type: 'object',
                 properties: {
                   freelancerId: { type: 'string' },
-                  rating: { type: 'number' },
-                  reviewCount: { type: 'number' }
+                  score: { type: 'number' },
+                  totalRatings: { type: 'number' },
+                  reviews: { type: 'array' }
                 }
               }
             }
@@ -52,10 +55,15 @@ registry.registerPath({
 // All authenticated roles (admin, client, freelancer) may read reviews.
 router.get('/:id', requirePermission('reviews', 'read'), ReputationController.getProfile);
 
+/**
+ * POST /api/v1/reputation/:id/rate
+ * Create a new reputation rating. Requires authentication.
+ */
 registry.registerPath({
-  method: 'put',
-  path: '/reputation/{id}',
-  summary: 'Update freelancer reputation',
+  method: 'post',
+  path: '/reputation/{id}/rate',
+  summary: 'Create reputation rating',
+  security: [{ bearerAuth: [] }],
   parameters: [
     {
       name: 'id',
@@ -74,19 +82,24 @@ registry.registerPath({
     }
   },
   responses: {
-    200: {
-      description: 'Updated reputation profile',
+    201: {
+      description: 'Rating created successfully',
       content: {
         'application/json': {
           schema: {
             type: 'object',
             properties: {
-              status: { type: 'string', example: 'success' }
+              status: { type: 'string', example: 'success' },
+              data: { type: 'object' }
             }
           }
         }
       }
-    }
+    },
+    400: { description: 'Invalid payload' },
+    403: { description: 'Forbidden - self-rating or unauthorized' },
+    409: { description: 'Conflict - duplicate rating' },
+    422: { description: 'Validation error' }
   }
 });
 
