@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodTypeAny, ZodError } from 'zod';
+import { AppError } from '../errors/appError';
 
 export interface ValidationErrorDetail {
   path: string[];
@@ -8,10 +9,12 @@ export interface ValidationErrorDetail {
 }
 
 export interface ValidationErrorResponse {
-  status: 'error';
-  code: string;
-  message: string;
-  details: ValidationErrorDetail[];
+  error: {
+    code: string;
+    message: string;
+    requestId: string;
+    details: ValidationErrorDetail[];
+  };
 }
 
 const mapZodErrorToDetails = (error: ZodError): ValidationErrorDetail[] => {
@@ -33,11 +36,14 @@ export const validateSchema = (schema: ZodTypeAny) => {
       next();
     } catch (error) {
       if (error instanceof ZodError) {
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         const response: ValidationErrorResponse = {
-          status: 'error',
-          code: 'validation_error',
-          message: 'Validation failed',
-          details: mapZodErrorToDetails(error),
+          error: {
+            code: 'validation_error',
+            message: 'Request validation failed',
+            requestId,
+            details: mapZodErrorToDetails(error),
+          },
         };
         return res.status(400).json(response);
       }

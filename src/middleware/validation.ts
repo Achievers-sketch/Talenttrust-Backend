@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import { AppError } from '../errors/appError';
 
 export const validateRequest = (schema: z.ZodSchema) => {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -8,15 +9,20 @@ export const validateRequest = (schema: z.ZodSchema) => {
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         return res.status(400).json({
-          error: 'Validation failed',
-          details: error.issues.map((err: any) => ({
-            field: err.path.join('.'),
-            message: err.message
-          }))
+          error: {
+            code: 'validation_error',
+            message: 'Request validation failed',
+            requestId,
+            details: error.issues.map((err: any) => ({
+              field: err.path.join('.'),
+              message: err.message
+            }))
+          }
         });
       }
-      return res.status(400).json({ error: 'Invalid request data' });
+      next(error);
     }
   };
 };
@@ -28,15 +34,20 @@ export const validateParams = (schema: z.ZodSchema) => {
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         return res.status(400).json({
-          error: 'Invalid parameters',
-          details: error.issues.map((err: any) => ({
-            field: err.path.join('.'),
-            message: err.message
-          }))
+          error: {
+            code: 'validation_error',
+            message: 'Parameter validation failed',
+            requestId,
+            details: error.issues.map((err: any) => ({
+              field: err.path.join('.'),
+              message: err.message
+            }))
+          }
         });
       }
-      return res.status(400).json({ error: 'Invalid parameters' });
+      next(error);
     }
   };
 };
@@ -48,15 +59,20 @@ export const validateQuery = (schema: z.ZodSchema) => {
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {
+        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
         return res.status(400).json({
-          error: 'Invalid query parameters',
-          details: error.issues.map((err: any) => ({
-            field: err.path.join('.'),
-            message: err.message
-          }))
+          error: {
+            code: 'validation_error',
+            message: 'Query parameter validation failed',
+            requestId,
+            details: error.issues.map((err: any) => ({
+              field: err.path.join('.'),
+              message: err.message
+            }))
+          }
         });
       }
-      return res.status(400).json({ error: 'Invalid query parameters' });
+      next(error);
     }
   };
 };

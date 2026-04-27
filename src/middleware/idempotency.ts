@@ -17,7 +17,14 @@ export const idempotencyMiddleware = (req: Request, res: Response, next: NextFun
   const idempotencyKey = req.headers['idempotency-key'] as string;
 
   if (!idempotencyKey) {
-    return res.status(400).json({ error: 'Idempotency-Key header is required' });
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+    return res.status(400).json({
+      error: {
+        code: 'bad_request',
+        message: 'Idempotency-Key header is required',
+        requestId,
+      },
+    });
   }
 
   // Basic cleanup of old keys (can be optimized or moved to a separate job)
@@ -32,7 +39,14 @@ export const idempotencyMiddleware = (req: Request, res: Response, next: NextFun
 
   if (existingEntry) {
     if (existingEntry.status === 'processing') {
-      return res.status(409).json({ error: 'Request is already being processed' });
+      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+      return res.status(409).json({
+        error: {
+          code: 'conflict',
+          message: 'Request is already being processed',
+          requestId,
+        },
+      });
     }
     
     // If it's already completed, return its cached result

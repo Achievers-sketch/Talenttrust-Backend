@@ -16,6 +16,7 @@ describe('Validate Middleware', () => {
     mockResponse = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn(),
+      locals: {},
     };
     mockNext = jest.fn();
   });
@@ -47,16 +48,18 @@ describe('Validate Middleware', () => {
     expect(mockResponse.status).toHaveBeenCalledWith(400);
     expect(mockResponse.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        status: 'error',
-        code: 'validation_error',
-        message: 'Validation failed',
-        details: expect.arrayContaining([
-          expect.objectContaining({
-            path: expect.any(Array),
-            message: expect.any(String),
-            code: expect.any(String),
-          }),
-        ]),
+        error: expect.objectContaining({
+          code: 'validation_error',
+          message: 'Request validation failed',
+          requestId: 'unknown',
+          details: expect.arrayContaining([
+            expect.objectContaining({
+              path: expect.any(Array),
+              message: expect.any(String),
+              code: expect.any(String),
+            }),
+          ]),
+        }),
       }),
     );
   });
