@@ -57,6 +57,7 @@ export function createApp(): express.Application {
 
   // ── Middleware ────────────────────────────────────────────────────────────
   app.use(express.json());
+  app.use(requestLimitsMiddleware);
   app.use(requestIdMiddleware);
   app.use(metricsService.trackHttpRequest.bind(metricsService));
 
