@@ -13,6 +13,7 @@ Handles contract metadata, reputation, and integration with Stellar/Soroban.
 - **Idempotent Event Processing**: Guaranteed safe event replay with deduplication
 - **Strict Schema Validation**: Contract-specific payload validation
 - **Audit Trail**: Complete processing history and statistics
+- **Stale-While-Revalidate Caching**: SWR caching for upstream resources with degraded signals
 
 ## Dependency Chaos Testing
 
