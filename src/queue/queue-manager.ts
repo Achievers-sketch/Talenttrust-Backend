@@ -19,6 +19,7 @@ import {
 } from './types';
 import { jobProcessors } from './processors';
 import { RetryPolicyManager } from './retry-manager';
+import { logger } from '../logger';
 
 /**
  * Queue health information - safe for admin exposure
@@ -85,7 +86,7 @@ export class QueueManager {
     });
 
     queue.on('error', (error: Error) => {
-      console.error(`[${jobType}] Queue error:`, error.message);
+      logger.error(`Queue error`, { jobType, error: error.message });
     });
 
     const worker = new Worker(
@@ -274,27 +275,27 @@ export class QueueManager {
     queueEvents: QueueEvents
   ): void {
     worker.on('completed', (job: Job, result: JobResult) => {
-      console.log(`[${jobType}] Job ${job.id} completed:`, result);
+      logger.info('Job completed', { jobType, jobId: job.id, result });
     });
 
     worker.on('failed', (job: Job | undefined, error: Error) => {
-      console.error(`[${jobType}] Job ${job?.id} failed:`, error.message);
+      logger.error('Job failed', { jobType, jobId: job?.id, error: error.message });
     });
 
     worker.on('error', (error: Error) => {
-      console.error(`[${jobType}] Worker error:`, error.message);
+      logger.error('Worker error', { jobType, error: error.message });
     });
 
     queueEvents.on('waiting', ({ jobId }: { jobId: string | undefined }) => {
-      console.log(`[${jobType}] Job ${jobId} is waiting`);
+      logger.debug('Job waiting', { jobType, jobId });
     });
 
     queueEvents.on('active', ({ jobId }: { jobId: string | undefined }) => {
-      console.log(`[${jobType}] Job ${jobId} is active`);
+      logger.debug('Job active', { jobType, jobId });
     });
 
     queueEvents.on('error', (error: Error) => {
-      console.error(`[${jobType}] QueueEvents error:`, error.message);
+      logger.error('QueueEvents error', { jobType, error: error.message });
     });
   }
 
@@ -351,7 +352,7 @@ export class QueueManager {
     }
 
     this.isShuttingDown = true;
-    console.log('Shutting down queue manager...');
+    logger.info('Shutting down queue manager...');
 
     const shutdownPromises: Promise<void>[] = [];
 
@@ -374,7 +375,7 @@ export class QueueManager {
     this.queueEvents.clear();
     this.isShuttingDown = false;
 
-    console.log('Queue manager shutdown complete');
+    logger.info('Queue manager shutdown complete');
   }
 
   /**

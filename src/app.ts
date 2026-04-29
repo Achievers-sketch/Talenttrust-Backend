@@ -13,7 +13,7 @@
 
 import express from 'express';
 import { applySecurityMiddleware } from './middleware/security';
-import { MetricsService } from './observability';
+import { MetricsService } from './observability/metrics-service';
 import { rateLimitStore } from './config/rateLimit';
 import { notFoundHandler, errorHandler } from './middleware/errorHandlers';
 import { healthRouter } from './routes/health';
@@ -25,9 +25,7 @@ import configRouter from './routes/config.routes';
 import dependencyScanRouter from './routes/dependency-scan.routes';
 import { adminRouter } from './routes/admin.routes';
 import { requestIdMiddleware } from './middleware/requestId';
-import { applySecurityMiddleware } from './middleware/security';
-import { MetricsService } from './observability/metrics-service';
-import { rateLimitStore } from './config/rateLimit';
+import { httpLoggerMiddleware } from './middleware/httpLogger';
 import { ReputationService } from './services/reputation.service';
 import { getDb } from './db/database';
 
@@ -64,6 +62,7 @@ export function createApp(): express.Application {
   app.use(express.json());
   app.use(requestLimitsMiddleware);
   app.use(requestIdMiddleware);
+  app.use(httpLoggerMiddleware);
   app.use(metricsService.trackHttpRequest.bind(metricsService));
 
   // ── Initialize Services ───────────────────────────────────────────────────

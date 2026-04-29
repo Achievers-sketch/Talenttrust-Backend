@@ -24,6 +24,8 @@ export interface EmailNotificationPayload {
   subject: string;
   body: string;
   templateId?: string;
+  correlationId?: string;
+  requestId?: string;
 }
 
 /**
@@ -33,6 +35,8 @@ export interface ContractProcessingPayload {
   contractId: string;
   action: 'create' | 'update' | 'finalize';
   metadata?: Record<string, unknown>;
+  correlationId?: string;
+  requestId?: string;
 }
 
 /**
@@ -43,6 +47,8 @@ export interface ReputationUpdatePayload {
   contractId: string;
   rating: number;
   feedback?: string;
+  correlationId?: string;
+  requestId?: string;
 }
 
 /**
@@ -52,6 +58,8 @@ export interface ReputationRecomputePayload {
   batchSize?: number;
   forceRecompute?: boolean;
   resumeFromCheckpoint?: boolean;
+  correlationId?: string;
+  requestId?: string;
 }
 
 /**
@@ -61,6 +69,8 @@ export interface BlockchainSyncPayload {
   network: 'stellar' | 'soroban';
   startBlock?: number;
   endBlock?: number;
+  correlationId?: string;
+  requestId?: string;
 }
 
 /**
