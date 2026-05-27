@@ -63,6 +63,31 @@ function serializeError(err: Error): Record<string, unknown> {
  * Sanitise a context object so that sensitive keys are never logged.
  * Extend this list as the domain grows.
  */
+const SENSITIVE_KEYS = new Set([
+  'authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'x-api-secret',
+  'x-auth-token',
+  'x-access-token',
+  'proxy-authorization',
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'access_token',
+  'refresh_token',
+  'api_key',
+  'apikey',
+  'credential',
+  'private',
+  'ssn',
+  'credit_card',
+  'webhooksecret',
+  'webhook_secret',
+]);
+
 const redactionPaths = SENSITIVE_KEYS.flatMap(key => [
   key,
   `*.${key}`,

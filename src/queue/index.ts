@@ -20,7 +20,7 @@ export { queueConfig, getRedisConfig } from './config';
 export {
 	WebhookDLQEntry,
 	WebhookDLQQuery,
-	WebhookDLQConfig,
+	DLQConfig as WebhookDLQConfig,
 	getWebhookDLQStorage,
 	clearWebhookDLQInstance,
 	initializeDLQMetrics,
