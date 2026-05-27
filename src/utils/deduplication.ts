@@ -1,5 +1,5 @@
-import { createHash } from 'crypto';
-import { ContractEvent } from '../events/types';
+import { createHash, timingSafeEqual } from 'crypto';
+import { ContractEvent, JsonValue } from '../events/types';
 
 export class DeduplicationManager {
   /**
@@ -23,9 +23,8 @@ export class DeduplicationManager {
    * @param payload The event payload
    * @returns SHA-256 hash of the payload
    */
-  static computePayloadHash(payload: Record<string, any>): string {
-    const payloadString = JSON.stringify(payload, Object.keys(payload).sort());
-    return createHash('sha256').update(payloadString).digest('hex');
+  static computePayloadHash(payload: JsonValue): string {
+    return createHash('sha256').update(canonicalize(payload)).digest('hex');
   }
 
   /**
@@ -36,7 +35,25 @@ export class DeduplicationManager {
    */
   static validatePayloadIntegrity(event: ContractEvent, expectedHash: string): boolean {
     const actualHash = this.computePayloadHash(event.payload);
-    return actualHash === expectedHash;
+    return this.comparePayloadHashes(actualHash, expectedHash);
+  }
+
+  /**
+   * Compares two payload hashes without data-dependent string comparison timing.
+   * @param actualHash The hash computed from the received payload
+   * @param expectedHash The hash stored for the idempotency key
+   * @returns True when both hashes are identical SHA-256 digests
+   */
+  static comparePayloadHashes(actualHash: string, expectedHash: string): boolean {
+    const actualBuffer = Buffer.from(actualHash, 'hex');
+    const expectedBuffer = Buffer.from(expectedHash, 'hex');
+
+    if (actualBuffer.length !== expectedBuffer.length) {
+      timingSafeEqual(actualBuffer, actualBuffer);
+      return false;
+    }
+
+    return timingSafeEqual(actualBuffer, expectedBuffer);
   }
 
   /**
@@ -67,4 +84,19 @@ export class DeduplicationManager {
   static areEventsDuplicates(event1: ContractEvent, event2: ContractEvent): boolean {
     return this.computeDeduplicationKey(event1) === this.computeDeduplicationKey(event2);
   }
+}
+
+function canonicalize(value: JsonValue): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalize(item)).join(',')}]`;
+  }
+
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalize(entry)}`)
+    .join(',')}}`;
 }

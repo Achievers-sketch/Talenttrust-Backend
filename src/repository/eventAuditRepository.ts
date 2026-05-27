@@ -1,5 +1,10 @@
 import { EventProcessingAudit, EventIngestionResult } from '../events/types';
 import { DeduplicationManager } from '../utils/deduplication';
+import { redact, redactPayloadForLog } from '../events/redact';
+
+const IDEMPOTENCY_CONFLICT_CODE = 'IDEMPOTENCY_PAYLOAD_CONFLICT';
+
+type Logger = Pick<Console, 'warn'>;
 
 export interface IEventAuditRepository {
   findByDeduplicationKey(deduplicationKey: string): Promise<EventProcessingAudit | null>;
@@ -79,15 +84,41 @@ export class InMemoryEventAuditRepository implements IEventAuditRepository {
 }
 
 export class EventAuditService {
-  constructor(private repository: IEventAuditRepository) {}
+  constructor(
+    private repository: IEventAuditRepository,
+    private logger: Logger = console,
+  ) {}
 
   async processEvent(event: any, contractType: string): Promise<EventIngestionResult> {
     const deduplicationKey = DeduplicationManager.computeDeduplicationKey(event);
     const processedAt = new Date();
+    const payloadHash = DeduplicationManager.computePayloadHash(event.payload);
 
     // Check for existing event
     const existingAudit = await this.repository.findByDeduplicationKey(deduplicationKey);
     if (existingAudit) {
+      if (!DeduplicationManager.comparePayloadHashes(payloadHash, existingAudit.payloadHash)) {
+        this.logger.warn(
+          'Rejected conflicting event idempotency replay',
+          redact({
+            contractType,
+            deduplicationKey,
+            storedPayloadHash: existingAudit.payloadHash,
+            receivedPayloadHash: payloadHash,
+            receivedPayload: redactPayloadForLog(event.payload),
+          }),
+        );
+
+        return {
+          deduplicationKey,
+          status: 'rejected',
+          reason: 'Idempotency key was already used with a different event payload.',
+          processedAt,
+          statusCode: 409,
+          code: IDEMPOTENCY_CONFLICT_CODE,
+        };
+      }
+
       return {
         deduplicationKey,
         status: 'duplicate',
@@ -104,7 +135,7 @@ export class EventAuditService {
       eventId: event.eventId,
       sequence: event.sequence,
       status: 'accepted',
-      payloadHash: DeduplicationManager.computePayloadHash(event.payload),
+      payloadHash,
       processedAt,
       createdAt: new Date()
     };

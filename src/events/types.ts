@@ -1,3 +1,19 @@
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+
+export interface EventEnvelope<TPayload extends JsonValue = JsonValue> {
+  id: string;
+  type: string;
+  payload: TPayload;
+}
+
+export interface IdempotentEventResult<TResult> {
+  result: TResult;
+  replayed: boolean;
+  payloadHash: string;
+}
+
 export interface ContractEvent {
   contractId: string;
   eventId: string;
@@ -12,6 +28,8 @@ export interface EventIngestionResult {
   status: 'accepted' | 'rejected' | 'duplicate';
   reason?: string;
   processedAt: Date;
+  statusCode?: number;
+  code?: string;
 }
 
 export interface EventProcessingAudit {
