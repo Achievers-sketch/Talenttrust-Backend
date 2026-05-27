@@ -4,12 +4,22 @@
  * Persists failed webhook deliveries to durable SQLite storage for later inspection and replay.
  * Implements deduplication to prevent duplicate reprocessing on replay.
  * 
+ * Capacity Management:
+ * - Default max capacity: 10000 entries
+ * - Overflow policy: oldest-evict (removes oldest entry when at capacity)
+ * 
+ * Poison Message Handling:
+ * - Max replay attempts: 5 (configurable)
+ * - Messages exceeding max attempts are permanently dropped
+ * 
  * @module queue/webhook-dlq
  */
 
 import Database from 'better-sqlite3';
 import path from 'path';
 import * as crypto from 'crypto';
+import { Counter, Registry } from 'prom-client';
+import { DLQOperation } from '../webhookMetrics';
 
 export interface WebhookDLQEntry {
   id: string;
@@ -22,6 +32,7 @@ export interface WebhookDLQEntry {
   lastError: string;
   dedupeKey: string;
   replayedAt?: string;
+  replayAttempts: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,12 +51,46 @@ export interface ReplayResult {
   message?: string;
 }
 
+export interface DLQConfig {
+  maxCapacity: number;
+  maxReplayAttempts: number;
+}
+
+const DEFAULT_DLQ_CONFIG: DLQConfig = {
+  maxCapacity: 10000,
+  maxReplayAttempts: 5,
+};
+
+let dlqMetricsCounter: Counter<string> | null = null;
+
+export function initializeDLQMetrics(registry: Registry): void {
+  if (dlqMetricsCounter) return;
+  dlqMetricsCounter = new Counter({
+    name: 'webhook_dlq_operations_total',
+    help: 'Total number of DLQ operations',
+    labelNames: ['operation'] as const,
+    registers: [registry],
+  });
+}
+
+export function resetDLQMetrics(): void {
+  dlqMetricsCounter = null;
+}
+
+function incrementDLQMetric(operation: DLQOperation): void {
+  if (dlqMetricsCounter) {
+    dlqMetricsCounter.inc({ operation });
+  }
+}
+
 class WebhookDLQStorage {
   private db: Database.Database;
+  private config: DLQConfig;
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, config: Partial<DLQConfig> = {}) {
     const resolvedPath = dbPath || process.env.WEBHOOK_DLQ_PATH || path.join(process.cwd(), 'data', 'webhook-dlq.db');
     this.db = new Database(resolvedPath);
+    this.config = { ...DEFAULT_DLQ_CONFIG, ...config };
     this.initialize();
   }
 
@@ -62,6 +107,7 @@ class WebhookDLQStorage {
         last_error TEXT NOT NULL,
         dedupe_key TEXT NOT NULL,
         replayed_at TEXT,
+        replay_attempts INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(dedupe_key)
@@ -75,6 +121,13 @@ class WebhookDLQStorage {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_webhook_dlq_dedupe_key ON webhook_dlq(dedupe_key)
     `);
+
+    // Migration: Add replay_attempts column if it doesn't exist
+    try {
+      this.db.exec(`ALTER TABLE webhook_dlq ADD COLUMN replay_attempts INTEGER NOT NULL DEFAULT 0`);
+    } catch {
+      // Column already exists, ignore
+    }
   }
 
   private generateDedupeKey(webhookId: string, payload: Record<string, unknown>): string {
@@ -94,11 +147,18 @@ class WebhookDLQStorage {
     const now = new Date().toISOString();
     const dedupeKey = this.generateDedupeKey(webhookId, body);
 
+    // Check capacity and evict oldest if necessary
+    const currentCount = await this.getPendingCount();
+    if (currentCount >= this.config.maxCapacity) {
+      await this.evictOldest();
+      incrementDLQMetric('drop_overflow');
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO webhook_dlq (
         id, webhook_id, url, body, retry_count, webhook_secret,
-        failed_at, last_error, dedupe_key, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        failed_at, last_error, dedupe_key, replay_attempts, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     try {
@@ -112,9 +172,11 @@ class WebhookDLQStorage {
         now,
         lastError,
         dedupeKey,
+        0,
         now,
         now
       );
+      incrementDLQMetric('enqueue');
     } catch (err: unknown) {
       const sqliteErr = err as { code?: string };
       if (sqliteErr.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -124,6 +186,25 @@ class WebhookDLQStorage {
     }
 
     return id;
+  }
+
+  private async getPendingCount(): Promise<number> {
+    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM webhook_dlq WHERE replayed_at IS NULL');
+    const result = stmt.get() as { count: number };
+    return result.count;
+  }
+
+  private async evictOldest(): Promise<void> {
+    const stmt = this.db.prepare(`
+      DELETE FROM webhook_dlq 
+      WHERE id = (
+        SELECT id FROM webhook_dlq 
+        WHERE replayed_at IS NULL 
+        ORDER BY failed_at ASC 
+        LIMIT 1
+      )
+    `);
+    stmt.run();
   }
 
   getEntry(id: string): WebhookDLQEntry | null {
@@ -168,6 +249,35 @@ class WebhookDLQStorage {
     
     const result = stmt.run(now, now, id);
     return result.changes > 0;
+  }
+
+  incrementReplayAttempts(id: string): { success: boolean; attempts: number; maxExceeded: boolean } {
+    const entry = this.getEntry(id);
+    if (!entry) {
+      return { success: false, attempts: 0, maxExceeded: false };
+    }
+
+    const newAttempts = entry.replayAttempts + 1;
+    const maxExceeded = newAttempts >= this.config.maxReplayAttempts;
+
+    if (maxExceeded) {
+      // Drop the poison message permanently
+      this.deleteEntry(id);
+      incrementDLQMetric('drop_poison');
+      return { success: true, attempts: newAttempts, maxExceeded: true };
+    }
+
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(`
+      UPDATE webhook_dlq SET replay_attempts = ?, updated_at = ? WHERE id = ?
+    `);
+    stmt.run(newAttempts, now, id);
+    
+    return { success: true, attempts: newAttempts, maxExceeded: false };
+  }
+
+  getMaxReplayAttempts(): number {
+    return this.config.maxReplayAttempts;
   }
 
   deleteEntry(id: string): boolean {
@@ -215,6 +325,7 @@ class WebhookDLQStorage {
       lastError: row.last_error as string,
       dedupeKey: row.dedupe_key as string,
       replayedAt: row.replayed_at as string | undefined,
+      replayAttempts: (row.replay_attempts as number) ?? 0,
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
     };

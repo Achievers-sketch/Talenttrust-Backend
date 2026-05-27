@@ -8,7 +8,6 @@ module.exports = {
     'reputation-recompute-processor.test.ts',
     'retry-manager.test.ts',
     'api/jobs.test',
-    'api/jobs.dlq.test.ts',
     'tests/load',
     'tests/stress',
     'webhook.service.test.ts',

@@ -17,6 +17,9 @@ export const FAILURE_REASONS = [
 ] as const;
 export type FailureReason = typeof FAILURE_REASONS[number];
 
+export const DLQ_OPERATIONS = ['enqueue', 'drop_overflow', 'drop_poison'] as const;
+export type DLQOperation = typeof DLQ_OPERATIONS[number];
+
 /**
  * Maps an HTTP status code or error type to a structured failure reason.
  * Never exposes raw error messages or unique identifiers.
@@ -64,7 +67,14 @@ export function createWebhookMetrics(registry: Registry) {
     registers: [registry],
   });
 
-  return { deliveryAttemptsTotal, deliveryLatencySeconds };
+  const dlqOperationsTotal = new Counter({
+    name: 'webhook_dlq_operations_total',
+    help: 'Total number of DLQ operations',
+    labelNames: ['operation'] as const,
+    registers: [registry],
+  });
+
+  return { deliveryAttemptsTotal, deliveryLatencySeconds, dlqOperationsTotal };
 }
 
 export type WebhookMetrics = ReturnType<typeof createWebhookMetrics>;

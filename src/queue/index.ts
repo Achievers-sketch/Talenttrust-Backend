@@ -20,7 +20,10 @@ export { queueConfig, getRedisConfig } from './config';
 export {
 	WebhookDLQEntry,
 	WebhookDLQQuery,
+	WebhookDLQConfig,
 	getWebhookDLQStorage,
 	clearWebhookDLQInstance,
+	initializeDLQMetrics,
+	resetDLQMetrics,
 } from './webhook-dlq';
 export { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from './webhook-retry-policy';
