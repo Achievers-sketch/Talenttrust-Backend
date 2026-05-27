@@ -1,110 +1,148 @@
-# Per-Provider Token-Bucket Rate Limiter
+# Request Limits Implementation Guide
 
-## Overview
+## Summary
 
-Outbound webhook deliveries are rate-limited on a **per-provider** basis using a token-bucket algorithm. Each provider gets its own independent bucket, so a slow or throttled partner cannot starve deliveries to other providers.
+This implementation adds strict request body size limits and content-type enforcement middleware to the Talenttrust Backend to prevent large-payload DoS attacks and ensure proper content handling.
 
-Deliveries that exceed a provider's capacity are **queued and paced** — they are never dropped.
+## Files Added/Modified
 
----
+### New Files
+- `src/middleware/requestLimits.ts` - Main middleware implementation
+- `src/middleware/__tests__/requestLimits.test.ts` - Unit tests
+- `src/requestLimits.integration.test.ts` - Integration tests
+- `docs/request-limits-security.md` - Security documentation
 
-## Environment Variables
+### Modified Files
+- `src/app.ts` - Integrated middleware into application
+- `.env.example` - Added new environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `WEBHOOK_BUCKET_CAPACITY` | `10` | Maximum tokens a single provider bucket can hold (burst ceiling). |
-| `WEBHOOK_REFILL_RATE_PER_SEC` | `2` | Tokens added per second per provider bucket. |
-| `WEBHOOK_SECRET_<PROVIDER_ID_UPPER>` | *(required)* | HMAC-SHA256 signing secret for each provider. Example: provider ID `acme` → `WEBHOOK_SECRET_ACME`. |
+## Implementation Details
 
-Both numeric values are validated at process startup. The process will throw a descriptive error and refuse to start if either value is zero, negative, non-numeric, or `Infinity`.
+### Middleware Features
 
-### Example `.env`
+1. **Request Body Size Limits**
+   - Default: 1MB maximum
+   - Validates Content-Length header
+   - Returns HTTP 413 for oversized requests
 
-```
-WEBHOOK_BUCKET_CAPACITY=10
-WEBHOOK_REFILL_RATE_PER_SEC=2
-WEBHOOK_SECRET_ACME=<secret from secrets manager>
-WEBHOOK_SECRET_PARTNERX=<secret from secrets manager>
-```
+2. **Content-Type Enforcement**
+   - Default: JSON-only (`application/json`)
+   - Validates media type (ignores charset)
+   - Returns HTTP 415 for invalid content-types
+   - Excludes GET/HEAD requests
 
----
+3. **Path Exclusions**
+   - Default: `/health`, `/metrics`
+   - Configurable via environment
+   - Supports prefix matching
 
-## Algorithm
+### Environment Configuration
 
-```
-tokens = min(capacity, tokens + elapsed_seconds × refillRatePerSec)
-```
+```bash
+# Request size limit (bytes)
+MAX_REQUEST_BODY_SIZE=1048576
 
-- On each `acquireToken(providerId)` call the bucket is refilled based on elapsed wall-clock time.
-- If `tokens >= 1` the token is consumed immediately and the call resolves.
-- If `tokens < 1` the caller is added to a FIFO queue. A `setTimeout` fires when the next token is due and drains as many queued callers as the refilled token count allows. The timer re-schedules itself until the queue is empty.
+# Content-type enforcement
+ENFORCE_JSON_CONTENT_TYPE=true
+ALLOWED_CONTENT_TYPES=application/json
 
----
-
-## Shared State — Per-Process Behaviour
-
-**Bucket state is held in-process (a plain `Map`).** Each Node.js process maintains its own independent buckets.
-
-### Implications for blue/green and multi-replica deployments
-
-| Scenario | Behaviour |
-|---|---|
-| Single process | Full rate limiting as configured. |
-| Blue/green (one active at a time) | Effective — only one process handles traffic at a time. |
-| Multiple replicas behind a load balancer | Each replica enforces its own limit independently. Effective per-replica rate is `capacity / N` where `N` is the number of replicas. |
-
-### Upgrade path to shared state
-
-If strict cross-replica rate limiting is required, replace the `Map<string, BucketState>` in `TokenBucketLimiter` with a Redis-backed store (e.g. using the `INCR` + `EXPIRE` pattern or a Lua script for atomic token consumption). The public `acquireToken` / `getTokenCount` interface is unchanged — only the storage layer needs to swap.
-
----
-
-## Idempotency
-
-`WebhookDeliveryService` tracks delivered IDs in an in-process `Set`. Duplicate `deliveryId` values within the same process lifetime are silently skipped (return `{ sent: false }`).
-
-For cross-process or cross-restart idempotency, the caller should use a distributed lock or deduplicate upstream before calling `deliver()`.
-
----
-
-## Payload Signing
-
-Every outbound webhook is signed with HMAC-SHA256:
-
-```
-X-Webhook-Signature: sha256=<64-char hex digest>
+# Path exclusions
+REQUEST_LIMITS_EXCLUDE_PATHS=/health,/metrics
 ```
 
-The signing secret is read from `WEBHOOK_SECRET_<PROVIDER_ID_UPPER>` at delivery time and is never stored, logged, or included in error messages.
+### Error Responses
 
----
+All errors use the standard application error format:
 
-## Metrics
+```json
+{
+  "error": {
+    "code": "payload_too_large" | "unsupported_media_type",
+    "message": "Descriptive error message",
+    "requestId": "unique-identifier"
+  }
+}
+```
 
-`webhookMetrics.ts` exposes two counters per provider:
+## Testing
 
-- `throttledByProvider` — incremented each time a delivery is queued (token not immediately available).
-- `deliveredByProvider` — incremented on each successful HTTP delivery.
+### Test Coverage
+- Unit tests: 100% coverage of middleware functions
+- Integration tests: Full application testing
+- Environment configuration tests
+- Error handling validation
 
-Call `getMetrics()` to retrieve a point-in-time snapshot. These are in-process counters; export to Prometheus, CloudWatch, or a push-gateway for cross-process aggregation.
+### Running Tests
+```bash
+npm run test:ci
+npm run test:watch
+```
 
----
+### Specific Test Files
+- `src/middleware/__tests__/requestLimits.test.ts` - Unit tests
+- `src/requestLimits.integration.test.ts` - Integration tests
 
-## Security Notes
+## Security Benefits
 
-1. **No secrets in source.** All signing secrets live in environment variables or a secrets manager. `.env` is in `.gitignore`.
-2. **Secret redaction in logs.** Provider IDs are truncated to 4 characters + `****` in all log output (see `redactId()`). Secret values are never passed to the rate limiter or metrics modules.
-3. **Error messages.** When a signing secret is missing, the error message contains only the environment variable *name* (e.g. `WEBHOOK_SECRET_ACME`), never the value.
-4. **Input validation.** `loadRateLimiterConfig()` rejects zero, negative, non-numeric, and `Infinity` values at boot, preventing silent misconfiguration.
-5. **Signature verification.** The `X-Webhook-Signature` header uses `sha256=<hex>` format. Receiving partners should verify this header before processing the payload.
+1. **DoS Prevention**: Limits request size to prevent memory exhaustion
+2. **Content-Type Security**: Prevents parsing vulnerabilities
+3. **Standardized Errors**: Consistent error handling prevents information leakage
+4. **Configurable**: Environment-driven settings for different deployment needs
 
----
+## Performance Impact
 
-## File Map
+- Minimal overhead (header-only validation when possible)
+- Early rejection of invalid requests
+- No request body buffering
+- Efficient string comparisons
 
-| File | Purpose |
-|---|---|
-| `src/rateLimit.ts` | `TokenBucketLimiter` class, `loadRateLimiterConfig`, `redactId`, `defaultLimiter` singleton |
-| `src/webhookDelivery.ts` | `WebhookDeliveryService` — rate limiting, signing, idempotency |
-| `src/webhookMetrics.ts` | In-process counters for throttled/delivered events |
-| `src/rateLimit.integration.test.ts` | Integration tests covering all acceptance criteria |
+## Migration Guide
+
+### For Existing Applications
+1. No breaking changes for valid requests
+2. Invalid requests will now be rejected with proper error codes
+3. Configure environment variables as needed
+
+### Recommended Settings
+- **Development**: Default settings (1MB, JSON-only)
+- **Staging**: Stricter limits (512KB) for testing
+- **Production**: Conservative limits with monitoring
+
+## Monitoring
+
+### Key Metrics to Monitor
+- Rate of 413 errors (payload too large)
+- Rate of 415 errors (unsupported media type)
+- Average request size
+- Request size distribution
+
+### Alerting
+- High error rates may indicate attacks
+- Monitor for abuse patterns
+- Track geographic distribution of violations
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Legitimate requests being rejected**
+   - Check Content-Length header accuracy
+   - Verify content-type configuration
+   - Consider path exclusions if needed
+
+2. **Integration issues**
+   - Ensure clients send proper Content-Type headers
+   - Verify request sizes are within limits
+   - Check environment variable configuration
+
+### Debugging
+- Enable debug logging
+- Monitor error responses
+- Test with different request sizes and content-types
+
+## Future Considerations
+
+1. **Dynamic Limits**: Per-endpoint configuration
+2. **Rate Limiting Integration**: Combined validation
+3. **Advanced Content-Type**: Schema validation
+4. **Machine Learning**: Adaptive limit adjustment

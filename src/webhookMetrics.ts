@@ -1,71 +1,80 @@
-/**
- * @module webhookMetrics
- *
- * Lightweight in-process metrics collector for webhook delivery events.
- * In a production multi-process deployment these counters are per-process;
- * export them to a Prometheus push-gateway or similar aggregator if
- * cross-process totals are required.
- *
- * SECURITY: This module never receives or stores provider secrets.
- * Only opaque provider IDs (strings) are recorded.
- */
+import { Counter, Histogram, Registry } from 'prom-client';
 
-/** Shape of the metrics snapshot returned by {@link getMetrics}. */
-export interface WebhookMetricsSnapshot {
-  /** Total throttled-delivery events recorded since process start, keyed by provider ID. */
-  throttledByProvider: Record<string, number>;
-  /** Total successful delivery events recorded since process start, keyed by provider ID. */
-  deliveredByProvider: Record<string, number>;
-}
+// Finite set of allowed label values — cardinality-safe
+export const PROVIDERS = ['stripe', 'github', 'slack', 'sendgrid', 'generic'] as const;
+export type Provider = typeof PROVIDERS[number];
 
-// ---------------------------------------------------------------------------
-// Internal mutable state (module-level singletons, reset-able for tests)
-// ---------------------------------------------------------------------------
+export const STATUSES = ['success', 'failure'] as const;
+export type Status = typeof STATUSES[number];
 
-let throttledByProvider: Record<string, number> = {};
-let deliveredByProvider: Record<string, number> = {};
+export const FAILURE_REASONS = [
+  'timeout',
+  '4xx_client_error',
+  '5xx_server_error',
+  'dns_resolution_failure',
+  'connection_refused',
+  'unknown',
+] as const;
+export type FailureReason = typeof FAILURE_REASONS[number];
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+export const DLQ_OPERATIONS = ['enqueue', 'drop_overflow', 'drop_poison'] as const;
+export type DLQOperation = typeof DLQ_OPERATIONS[number];
 
 /**
- * Record that a webhook delivery was throttled (token not immediately
- * available) for the given provider.
- *
- * @param providerId - Opaque provider identifier. Must NOT contain secrets.
+ * Maps an HTTP status code or error type to a structured failure reason.
+ * Never exposes raw error messages or unique identifiers.
  */
-export function recordThrottled(providerId: string): void {
-  throttledByProvider[providerId] = (throttledByProvider[providerId] ?? 0) + 1;
+export function getLabelValues(
+  statusCode?: number,
+  errorType?: string,
+): { status: Status; reason: FailureReason } {
+  if (errorType === 'ECONNREFUSED') {
+    return { status: 'failure', reason: 'connection_refused' };
+  }
+  if (errorType === 'ENOTFOUND' || errorType === 'EAI_AGAIN') {
+    return { status: 'failure', reason: 'dns_resolution_failure' };
+  }
+  if (errorType === 'ETIMEDOUT' || errorType === 'ECONNABORTED') {
+    return { status: 'failure', reason: 'timeout' };
+  }
+  if (statusCode !== undefined) {
+    if (statusCode >= 200 && statusCode < 300) {
+      return { status: 'success', reason: 'unknown' };
+    }
+    if (statusCode >= 400 && statusCode < 500) {
+      return { status: 'failure', reason: '4xx_client_error' };
+    }
+    if (statusCode >= 500) {
+      return { status: 'failure', reason: '5xx_server_error' };
+    }
+  }
+  return { status: 'failure', reason: 'unknown' };
 }
 
-/**
- * Record that a webhook was successfully delivered for the given provider.
- *
- * @param providerId - Opaque provider identifier. Must NOT contain secrets.
- */
-export function recordDelivered(providerId: string): void {
-  deliveredByProvider[providerId] = (deliveredByProvider[providerId] ?? 0) + 1;
+export function createWebhookMetrics(registry: Registry) {
+  const deliveryAttemptsTotal = new Counter({
+    name: 'webhook_delivery_attempts_total',
+    help: 'Total number of webhook delivery attempts',
+    labelNames: ['status', 'provider', 'reason'] as const,
+    registers: [registry],
+  });
+
+  const deliveryLatencySeconds = new Histogram({
+    name: 'webhook_delivery_latency_seconds',
+    help: 'Webhook delivery latency in seconds',
+    labelNames: ['status', 'provider'] as const,
+    buckets: [0.1, 0.5, 1, 2, 5, 10],
+    registers: [registry],
+  });
+
+  const dlqOperationsTotal = new Counter({
+    name: 'webhook_dlq_operations_total',
+    help: 'Total number of DLQ operations',
+    labelNames: ['operation'] as const,
+    registers: [registry],
+  });
+
+  return { deliveryAttemptsTotal, deliveryLatencySeconds, dlqOperationsTotal };
 }
 
-/**
- * Return a point-in-time snapshot of all recorded metrics.
- * The returned object is a deep copy; mutations do not affect internal state.
- */
-export function getMetrics(): WebhookMetricsSnapshot {
-  return {
-    throttledByProvider: { ...throttledByProvider },
-    deliveredByProvider: { ...deliveredByProvider },
-  };
-}
-
-/**
- * Reset all counters to zero.
- * Intended for use in tests only — do not call in production code.
- *
- * @internal
- */
-export function _resetMetrics(): void {
-  throttledByProvider = {};
-  deliveredByProvider = {};
-}
+export type WebhookMetrics = ReturnType<typeof createWebhookMetrics>;
