@@ -61,7 +61,6 @@ module.exports = {
     '!src/index.ts',
     '!src/tests/load/**',
     '!src/tests/stress/**',
-    '!src/deploy.ts',
     '!src/server.ts',
     '!src/queue/index.ts',
     '!src/services/soroban/index.ts',
