@@ -8,6 +8,7 @@ dist/
 coverage/
 .idea
 test_output.txt
+talenttrust.db
 *.tgz
 npm-debug.log*
 yarn-error.log*
