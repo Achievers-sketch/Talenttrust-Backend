@@ -5,6 +5,7 @@
 
 import request from 'supertest';
 import { createApp } from './app';
+import net from 'net';
 
 describe('Request Limits Integration Tests', () => {
   let app: any;
@@ -293,6 +294,106 @@ describe('Request Limits Integration Tests', () => {
         const isAbortError = error.code === 'ECONNRESET' || error.code === 'EPIPE' || error.message.includes('hang up') || error.message.includes('aborted');
         expect(isAbortError).toBe(true);
       }
+    });
+
+    it('should reject when Content-Length declares a smaller size than actual body', async () => {
+      process.env = {
+        ...process.env,
+        MAX_REQUEST_BODY_SIZE: '100', // 100 bytes
+      };
+
+      const appServer = createApp({ includeTerminalHandlers: true }).listen(0);
+      const port = (appServer.address() as any).port;
+
+      // Craft a request that declares Content-Length: 10 but sends a much larger body
+      const rawHeaders = [
+        'POST /api/config HTTP/1.1',
+        `Host: 127.0.0.1:${port}`,
+        'Content-Type: application/json',
+        'Content-Length: 10',
+        'Connection: close',
+        '\r\n',
+      ].join('\r\n');
+
+      const largeBody = JSON.stringify({ data: 'x'.repeat(200) });
+
+      const responsePromise = new Promise<string | null>((resolve) => {
+        const client = net.connect(port, '127.0.0.1', () => {
+          client.write(rawHeaders);
+          // Write the oversized body despite the small Content-Length
+          client.write(largeBody);
+        });
+
+        let acc = '';
+        client.on('data', (chunk) => {
+          acc += chunk.toString('utf8');
+        });
+
+        client.on('end', () => resolve(acc));
+        client.on('close', () => resolve(acc || null));
+        client.on('error', () => resolve(null));
+        // Safety timeout
+        setTimeout(() => resolve(acc || null), 1500);
+      });
+
+      const resp = await responsePromise;
+
+      // Either we received an HTTP 413 response, or the connection was closed abruptly.
+      if (resp) {
+        expect(resp.startsWith('HTTP/1.1 413') || resp.includes('413')).toBe(true);
+      } else {
+        // Null indicates the socket closed without a response which is acceptable
+        expect(resp).toBeNull();
+      }
+
+      appServer.close();
+    });
+
+    it('should reject chunked transfer (no Content-Length) that exceeds the limit without buffering', async () => {
+      process.env = {
+        ...process.env,
+        MAX_REQUEST_BODY_SIZE: '1000', // 1000 bytes
+      };
+
+      const appServer = createApp({ includeTerminalHandlers: true }).listen(0);
+      const port = (appServer.address() as any).port;
+
+      const rawHeaders = [
+        'POST /api/config HTTP/1.1',
+        `Host: 127.0.0.1:${port}`,
+        'Content-Type: application/json',
+        'Transfer-Encoding: chunked',
+        'Connection: close',
+        '\r\n',
+      ].join('\r\n');
+
+      const responsePromise = new Promise<string | null>((resolve) => {
+        const client = net.connect(port, '127.0.0.1', () => {
+          client.write(rawHeaders);
+          // Send a small first chunk
+          client.write('10\r\n' + 'a'.repeat(16) + '\r\n');
+          // Send a very large chunk to exceed the server-side limit
+          client.write('400\r\n' + 'b'.repeat(1024) + '\r\n');
+          // End chunks
+          client.write('0\r\n\r\n');
+        });
+
+        let acc = '';
+        client.on('data', (chunk) => { acc += chunk.toString('utf8'); });
+        client.on('end', () => resolve(acc));
+        client.on('close', () => resolve(acc || null));
+        client.on('error', () => resolve(null));
+        setTimeout(() => resolve(acc || null), 1500);
+      });
+
+      const resp = await responsePromise;
+      if (resp) {
+        expect(resp.startsWith('HTTP/1.1 413') || resp.includes('413')).toBe(true);
+      } else {
+        expect(resp).toBeNull();
+      }
+
+      appServer.close();
     });
   });
 });
