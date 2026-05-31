@@ -6,9 +6,17 @@
  * ## Algorithm
  * Uses a **sliding-window counter** per key (default: client IP).
  * When a key exceeds `maxRequests` within `windowMs`:
- *   1. A 429 response is returned immediately.
+ *   1. A 429 Too Many Requests response is returned immediately.
  *   2. The abuse guard checks whether the violation count itself exceeds
  *      `abuseThreshold`. If so, the key is **hard-blocked** for `blockDurationMs`.
+ *
+ * ## RFC 6585 Compliance
+ * All 429 responses include:
+ * - **HTTP Status**: 429 Too Many Requests
+ * - **Retry-After Header**: Seconds until the rate limit resets or block expires
+ * - **X-RateLimit-* Headers**: Current state (Limit, Remaining, Reset)
+ * - **Safe Error Body**: Conforms to the error contract in src/errors/safeErrors.ts
+ *   to prevent information disclosure via error messages.
  *
  * ## Adaptive throttling
  * The abuse guard doubles the block duration on every successive violation
@@ -23,6 +31,7 @@
  * - Keys are hashed in the store — raw IPs are never persisted.
  * - All timing operations use `Date.now()` (monotonic in V8 ≥ Node 16).
  * - Blocked responses include `Retry-After` to aid legitimate clients.
+ * - Error messages are sanitized per the safe-error policy (CWE-209).
  * - Headers expose only aggregate counts, never raw keys.
  *
  * @example
@@ -36,6 +45,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { RateLimitStore } from '../lib/rateLimitStore';
+import { sanitizeErrorMessage } from '../errors/safeErrors';
 
 
 export interface RateLimiterConfig {
@@ -147,12 +157,16 @@ export function createRateLimiter(config: RateLimiterConfig = {}) {
           res.setHeader('X-RateLimit-Blocked', 'true');
         }
         const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+        const code = 'rate_limited';
+        const safeMessage = sanitizeErrorMessage(
+          'Too many requests — please try again later',
+          code,
+        );
         res.status(429).json({
           error: {
-            code: 'rate_limited',
-            message: 'Your access has been temporarily blocked due to excessive requests.',
+            code,
+            message: safeMessage,
             requestId,
-            retryAfter: retryAfterSec,
           },
         });
         return;
@@ -222,12 +236,16 @@ export function createRateLimiter(config: RateLimiterConfig = {}) {
           res.setHeader('X-RateLimit-Blocked', 'true');
         }
         const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+        const code = 'rate_limited';
+        const safeMessage = sanitizeErrorMessage(
+          'Too many requests — please try again later',
+          code,
+        );
         res.status(429).json({
           error: {
-            code: 'rate_limited',
-            message: 'Abuse detected. Your access has been temporarily blocked.',
+            code,
+            message: safeMessage,
             requestId,
-            retryAfter: retryAfterSec,
           },
         });
         return;
@@ -237,12 +255,16 @@ export function createRateLimiter(config: RateLimiterConfig = {}) {
 
       if (sendHeaders) res.setHeader('Retry-After', resetSec);
       const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+      const code = 'rate_limited';
+      const safeMessage = sanitizeErrorMessage(
+        'Too many requests — please try again later',
+        code,
+      );
       res.status(429).json({
         error: {
-          code: 'rate_limited',
-          message: `Rate limit exceeded. Try again in ${resetSec} second(s).`,
+          code,
+          message: safeMessage,
           requestId,
-          retryAfter: resetSec,
         },
       });
       return;
