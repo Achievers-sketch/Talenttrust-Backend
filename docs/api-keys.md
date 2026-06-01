@@ -6,11 +6,33 @@ This document describes the API key authentication system implemented for Talent
 
 API keys provide a secure way for internal services and external integrations to access the TalentTrust API without requiring user authentication. API keys are separate from JWT user authentication and can be used for service-to-service communication.
 
+## Admin Scopes
+
+API keys used for admin-only surfaces (DLQ inspection, deploy operations) require one of the following scopes:
+
+| Scope | Permits |
+|-------|---------|
+| `deploy:*` | All deployment operations (switch, rollback, status) |
+| `*` | Full access (admin keys only) |
+| `jobs:admin` | DLQ list, replay, and metrics |
+| `jobs:*` | All job-related admin operations |
+
+## Protected Endpoints
+
+The following endpoints require either a JWT with `admin` role or an API key with one of the admin scopes above:
+
+- `GET /api/v1/jobs/dlq` — List failed jobs in the DLQ
+- `POST /api/v1/jobs/dlq/reprocess` — Replay a failed job
+- `GET /api/v1/admin/deploy/status` — Get deployment state
+- `POST /api/v1/admin/deploy/switch-green` — Promote green to active
+- `POST /api/v1/admin/deploy/rollback` — Roll back to blue
+
 ## Features
 
 - **Secure Generation**: Cryptographically generated 32-byte hex keys
 - **Hashed Storage**: Keys are hashed at rest using PBKDF2 with salt
 - **Scoping**: Fine-grained permissions using resource:action format
+- **Constant-Time Comparison**: `crypto.timingSafeEqual` prevents timing attacks on key verification
 - **Rotation**: Safe key rotation without changing the key ID
 - **Expiration**: Optional expiration dates for temporary access
 - **Audit Trail**: Last usage tracking for security monitoring

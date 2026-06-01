@@ -6,15 +6,15 @@
  * when this file is the program entry and Jest is not running.
  */
 
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response } from 'express';
 import { createApp, attachTerminalHandlers } from './app';
 import { JobType, JobPayload, QueueManager } from './queue';
-import { authMiddleware, AuthenticatedRequest } from './middleware/auth';
 import { auditService } from './audit/service';
 import { createAuditRouter } from './audit/router';
 import { createRateLimiter } from './middleware/rateLimiter';
 import { rateLimitConfig } from './config/rateLimit';
 import { requireAuth, requireRole } from './middleware/authorization';
+import { adminAuthGuard } from './middleware/adminAuthGuard';
 
 const queueManager = QueueManager.getInstance();
 
@@ -48,55 +48,10 @@ function parsePositiveInt(value: unknown, fallback: number): number {
   return Math.floor(parsed);
 }
 
-function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  if (!req.user) {
-    res.status(401).json({ error: 'Authentication required' });
-    return;
-  }
-
-  if (req.user.role !== 'admin') {
-    res.status(403).json({ error: 'Admin role required' });
-    return;
-  }
-
-  next();
-}
-
-app.post('/api/v1/jobs', async (req: Request, res: Response) => {
-  try {
-    const { type, payload, options } = req.body as {
-      type?: string;
-      payload?: unknown;
-      options?: any;
-    };
-
-    if (!type || payload === undefined) {
-      return res.status(400).json({ error: 'Job type and payload are required' });
-    }
-
-    if (!Object.values(JobType).includes(type as JobType)) {
-      return res.status(400).json({ error: `Invalid job type: ${type}` });
-    }
-
-    const result = await queueManager.addJob(type as JobType, payload as JobPayload, options);
-    const httpStatus = (result as any).deduplicated ? 200 : 201;
-    return res.status(httpStatus).json({
-      jobId: (result as any).jobId,
-      type,
-      status: 'queued',
-      deduplicated: (result as any).deduplicated,
-    });
-  } catch (error) {
-    console.error('Failed to enqueue job', error);
-    return res.status(500).json({ error: 'An unexpected error occurred' });
-  }
-});
-
 app.get(
   '/api/v1/jobs/dlq',
-  authMiddleware,
-  requireAdmin,
-  async (req: AuthenticatedRequest, res: Response) => {
+  adminAuthGuard,
+  async (req: Request & { user?: { id: string } }, res: Response) => {
     try {
       const typeQuery = (req as any).query['type'];
       const limitQuery = (req as any).query['limit'];
@@ -145,9 +100,8 @@ app.get(
 
 app.post(
   '/api/v1/jobs/dlq/reprocess',
-  authMiddleware,
-  requireAdmin,
-  async (req: AuthenticatedRequest, res: Response) => {
+  adminAuthGuard,
+  async (req: Request & { user?: { id: string } }, res: Response) => {
     try {
       const { type, jobId, reason } = (req as any).body as {
         type?: string;
@@ -201,6 +155,36 @@ app.post(
     }
   },
 );
+
+app.post('/api/v1/jobs', async (req: Request, res: Response) => {
+  try {
+    const { type, payload, options } = req.body as {
+      type?: string;
+      payload?: unknown;
+      options?: any;
+    };
+
+    if (!type || payload === undefined) {
+      return res.status(400).json({ error: 'Job type and payload are required' });
+    }
+
+    if (!Object.values(JobType).includes(type as JobType)) {
+      return res.status(400).json({ error: `Invalid job type: ${type}` });
+    }
+
+    const result = await queueManager.addJob(type as JobType, payload as JobPayload, options);
+    const httpStatus = (result as any).deduplicated ? 200 : 201;
+    return res.status(httpStatus).json({
+      jobId: (result as any).jobId,
+      type,
+      status: 'queued',
+      deduplicated: (result as any).deduplicated,
+    });
+  } catch (error) {
+    console.error('Failed to enqueue job', error);
+    return res.status(500).json({ error: 'An unexpected error occurred' });
+  }
+});
 
 app.get('/api/v1/jobs/:type/:jobId', async (req: Request, res: Response) => {
   try {

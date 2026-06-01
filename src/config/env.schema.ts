@@ -44,6 +44,13 @@ export const envSchema = z.object({
   // Secrets
   JWT_SECRET: z.string().min(8, "JWT_SECRET must be at least 8 characters").optional(),
 
+  // Admin API Key Configuration
+  ADMIN_API_KEY: z.string().optional(),
+  ADMIN_API_KEY_SCOPES: z.string()
+    .optional()
+    .transform((val) => val ? val.split(',') : ['deploy:*', '*', 'jobs:admin', 'jobs:*'])
+    .pipe(z.array(z.string()).optional()),
+
   // Stellar/Soroban Configuration
   STELLAR_HORIZON_URL: z.string().url()
     .refine(val => isSafeUrl(val), {
