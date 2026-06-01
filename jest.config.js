@@ -15,7 +15,6 @@ module.exports = {
     'occ.integration.test.ts',
     'deployment/integration.test.ts',
     'retention/integration.test.ts',
-    'errorMessagePolicy.integration.test.ts',
     'contractMetadata.integration.test.ts',
     'TransactionPoller.test.ts',
     'requestLogger.test.ts',

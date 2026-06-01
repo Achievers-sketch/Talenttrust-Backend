@@ -79,6 +79,46 @@ Authorization: Bearer <token>
 - `demo-admin-token` - Admin user with full access
 - `demo-user-token` - Regular user with limited access
 
+## Error Responses
+
+All terminal API errors are serialized through the safe error message policy.
+Internal exception details, stack traces, file paths, SQL fragments, dependency
+hostnames, tokens, and secrets are logged only through redacted structured logs
+and are never returned to API clients.
+
+Every policy-managed error response uses this envelope:
+
+```json
+{
+  "error": {
+    "code": "machine_readable_code",
+    "message": "safe client-facing message",
+    "requestId": "request-correlation-id"
+  }
+}
+```
+
+Validation responses may include a `details` array with field-level Zod issue
+metadata. These details are also passed through the same safe-message filters.
+
+Common status/code mappings:
+
+| Status | Code | Message |
+|---:|---|---|
+| 400 | `invalid_json` | Malformed JSON payload |
+| 400 | `validation_error` | Request validation failed |
+| 401 | `unauthorized` | Authentication is required |
+| 403 | `forbidden` | You do not have permission to perform this action |
+| 404 | `not_found` | The requested resource was not found |
+| 409 | `conflict` | The request conflicts with the current state |
+| 413 | `payload_too_large` | Payload Too Large |
+| 415 | `unsupported_media_type` | Unsupported Media Type |
+| 500 | `internal_error` | An unexpected error occurred |
+| 503 | `dependency_unavailable` | A required service is temporarily unavailable |
+
+Use the returned `requestId` when contacting support; it ties the response to
+redacted server-side logs without exposing sensitive internals.
+
 ## Contracts API
 
 ### Overview

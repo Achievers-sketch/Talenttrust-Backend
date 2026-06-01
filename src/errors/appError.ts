@@ -1,3 +1,4 @@
+import { ZodError } from 'zod';
 import { sanitizeErrorMessage, safeMessageForCode } from './safeErrors';
 
 export interface ErrorPayload {
@@ -5,7 +6,14 @@ export interface ErrorPayload {
     code: string;
     message: string;
     requestId: string;
+    details?: ValidationIssue[];
   };
+}
+
+export interface ValidationIssue {
+  path: string[];
+  message: string;
+  code: string;
 }
 
 /**
@@ -80,8 +88,29 @@ export class ValidationError extends AppError {
   }
 }
 
+function statusCodeFor(error: AppError): number {
+  if (Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode <= 599) {
+    return error.statusCode;
+  }
+
+  return 500;
+}
+
+function mapZodErrorToDetails(error: ZodError): ValidationIssue[] {
+  return error.issues.map((issue) => ({
+    path: issue.path.map((part) => String(part)),
+    message: sanitizeErrorMessage(issue.message, 'validation_error'),
+    code: issue.code,
+  }));
+}
+
 /**
  * Normalizes thrown errors into a safe and consistent API response payload.
+ *
+ * @remarks This function is the single serialization boundary for terminal API
+ * error responses. Internal exception text is never returned for unknown errors,
+ * and AppError messages are filtered through the safe message policy before
+ * they are exposed.
  */
 export function mapErrorToPayload(
   error: unknown,
@@ -93,12 +122,26 @@ export function mapErrorToPayload(
       : safeMessageForCode(error.code);
 
     return {
-      statusCode: error.statusCode,
+      statusCode: statusCodeFor(error),
       payload: {
         error: {
           code: error.code,
           message,
           requestId,
+        },
+      },
+    };
+  }
+
+  if (error instanceof ZodError) {
+    return {
+      statusCode: 400,
+      payload: {
+        error: {
+          code: 'validation_error',
+          message: safeMessageForCode('validation_error'),
+          requestId,
+          details: mapZodErrorToDetails(error),
         },
       },
     };

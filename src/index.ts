@@ -8,6 +8,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { createApp, attachTerminalHandlers } from './app';
+import { AppError } from './errors/appError';
 import { JobType, JobPayload, QueueManager } from './queue';
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth';
 import { auditService } from './audit/service';
@@ -18,7 +19,7 @@ import { requireAuth, requireRole } from './middleware/authorization';
 
 const queueManager = QueueManager.getInstance();
 
-const app = createApp();
+const app = createApp({ includeTerminalHandlers: false });
 
 const auditExportLimiter = createRateLimiter({
   ...rateLimitConfig.auditExport,
@@ -62,7 +63,7 @@ function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFuncti
   next();
 }
 
-app.post('/api/v1/jobs', async (req: Request, res: Response) => {
+app.post('/api/v1/jobs', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { type, payload, options } = req.body as {
       type?: string;
@@ -75,7 +76,7 @@ app.post('/api/v1/jobs', async (req: Request, res: Response) => {
     }
 
     if (!Object.values(JobType).includes(type as JobType)) {
-      return res.status(400).json({ error: `Invalid job type: ${type}` });
+      return res.status(400).json({ error: 'Invalid job type' });
     }
 
     const result = await queueManager.addJob(type as JobType, payload as JobPayload, options);
@@ -87,8 +88,8 @@ app.post('/api/v1/jobs', async (req: Request, res: Response) => {
       deduplicated: (result as any).deduplicated,
     });
   } catch (error) {
-    console.error('Failed to enqueue job', error);
-    return res.status(500).json({ error: 'An unexpected error occurred' });
+    next(error);
+    return;
   }
 });
 
@@ -96,7 +97,7 @@ app.get(
   '/api/v1/jobs/dlq',
   authMiddleware,
   requireAdmin,
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const typeQuery = (req as any).query['type'];
       const limitQuery = (req as any).query['limit'];
@@ -104,7 +105,7 @@ app.get(
 
       const jobType = typeof typeQuery === 'string' ? typeQuery : undefined;
       if (jobType && !Object.values(JobType).includes(jobType as JobType)) {
-        return res.status(400).json({ error: `Invalid job type: ${jobType}` });
+        return res.status(400).json({ error: 'Invalid job type' });
       }
 
       const limit = Math.min(
@@ -137,8 +138,8 @@ app.get(
 
       return res.status(200).json({ entries, limit, offset, count: entries.length });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return res.status(500).json({ error: `Failed to get DLQ entries: ${message}` });
+      next(error);
+      return;
     }
   },
 );
@@ -147,7 +148,7 @@ app.post(
   '/api/v1/jobs/dlq/reprocess',
   authMiddleware,
   requireAdmin,
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const { type, jobId, reason } = (req as any).body as {
         type?: string;
@@ -162,7 +163,7 @@ app.post(
       }
 
       if (!Object.values(JobType).includes(type as JobType)) {
-        return res.status(400).json({ error: `Invalid job type: ${type}` });
+        return res.status(400).json({ error: 'Invalid job type' });
       }
 
       const replayResult = await queueManager.reprocessFailedJob(type as JobType, jobId);
@@ -190,24 +191,27 @@ app.post(
       const message = error instanceof Error ? error.message : 'Unknown error';
 
       if (message.startsWith('Failed job not found')) {
-        return res.status(404).json({ error: message });
+        next(new AppError(404, 'not_found', 'The requested resource was not found'));
+        return;
       }
 
       if (message.includes('not in failed state')) {
-        return res.status(409).json({ error: message });
+        next(new AppError(409, 'conflict', 'The request conflicts with the current state'));
+        return;
       }
 
-      return res.status(500).json({ error: `Failed to reprocess DLQ job: ${message}` });
+      next(error);
+      return;
     }
   },
 );
 
-app.get('/api/v1/jobs/:type/:jobId', async (req: Request, res: Response) => {
+app.get('/api/v1/jobs/:type/:jobId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { type, jobId } = req.params;
 
     if (!Object.values(JobType).includes(type as JobType)) {
-      return res.status(400).json({ error: `Invalid job type: ${type}` });
+      return res.status(400).json({ error: 'Invalid job type' });
     }
 
     const status = await queueManager.getJobStatus(type as JobType, jobId);
@@ -218,8 +222,8 @@ app.get('/api/v1/jobs/:type/:jobId', async (req: Request, res: Response) => {
 
     return res.json(status);
   } catch (error) {
-    console.error('Failed to get job status', error);
-    return res.status(500).json({ error: 'An unexpected error occurred' });
+    next(error);
+    return;
   }
 });
 
