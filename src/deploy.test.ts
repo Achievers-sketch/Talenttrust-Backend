@@ -5,10 +5,26 @@ import {
   rollback,
   getStatus,
   setHealthChecker,
+  setErrorRateReader,
+  monitorAndAutoRollback,
+  loadAutoRollbackConfig,
+  readErrorRateFromRegistry,
+  ErrorRateSample,
   DeploymentState,
 } from "./deploy";
+import { setWriteRecordImpl } from "./logger";
 
 const STATE_FILE = path.join(process.cwd(), ".deployment-state.json");
+
+/**
+ * Build an error-rate reader that returns successive cumulative snapshots.
+ * The first call is the soak baseline; the last snapshot repeats for any
+ * extra samples so callers don't need to pad the sequence.
+ */
+function readerFromSequence(samples: ErrorRateSample[]): () => Promise<ErrorRateSample> {
+  let i = 0;
+  return async () => samples[Math.min(i++, samples.length - 1)];
+}
 
 /** Write a known state directly to disk so tests start from a predictable point. */
 function seedState(state: DeploymentState): void {
@@ -224,7 +240,9 @@ describe("rollback", () => {
   });
 
   it("is a no-op when already on blue (no previousColor)", async () => {
-    // State is blue with no previousColor — rollback should do nothing
+    // Seed an explicit blue state so lastSwitch is stable across reads
+    // (an absent state file falls back to a fresh Date.now() each call).
+    seedState({ activeColor: "blue", lastSwitch: 1234 });
     const { lastSwitch: before } = await getStatus();
     await rollback();
     const { lastSwitch: after } = await getStatus();
@@ -308,5 +326,285 @@ describe("concurrent switchToGreen", () => {
     // Final state must be consistent
     const finalState = await getStatus();
     expect(["blue", "green"]).toContain(finalState.activeColor);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadAutoRollbackConfig — env parsing & validation
+// ---------------------------------------------------------------------------
+
+describe("loadAutoRollbackConfig", () => {
+  it("returns documented defaults when nothing is set", () => {
+    const cfg = loadAutoRollbackConfig({});
+    expect(cfg).toEqual({
+      enabled: true,
+      errorRateThreshold: 0.05,
+      soakWindowMs: 30_000,
+      sampleIntervalMs: 5_000,
+      minRequests: 20,
+    });
+  });
+
+  it("parses valid overrides", () => {
+    const cfg = loadAutoRollbackConfig({
+      AUTO_ROLLBACK_ENABLED: "false",
+      ROLLBACK_ERROR_RATE_THRESHOLD: "0.2",
+      ROLLBACK_SOAK_WINDOW_MS: "10000",
+      ROLLBACK_SAMPLE_INTERVAL_MS: "2000",
+      ROLLBACK_MIN_REQUESTS: "5",
+    });
+    expect(cfg).toEqual({
+      enabled: false,
+      errorRateThreshold: 0.2,
+      soakWindowMs: 10_000,
+      sampleIntervalMs: 2_000,
+      minRequests: 5,
+    });
+  });
+
+  it("clamps the soak window and sample interval to safe bounds", () => {
+    const cfg = loadAutoRollbackConfig({
+      ROLLBACK_SOAK_WINDOW_MS: "999999999",
+      ROLLBACK_SAMPLE_INTERVAL_MS: "1",
+    });
+    expect(cfg.soakWindowMs).toBe(600_000);
+    expect(cfg.sampleIntervalMs).toBe(100);
+  });
+
+  it("caps the sample interval to the soak window", () => {
+    const cfg = loadAutoRollbackConfig({
+      ROLLBACK_SOAK_WINDOW_MS: "3000",
+      ROLLBACK_SAMPLE_INTERVAL_MS: "5000",
+    });
+    expect(cfg.sampleIntervalMs).toBe(3_000);
+  });
+
+  it("rejects a non-boolean enabled flag", () => {
+    expect(() => loadAutoRollbackConfig({ AUTO_ROLLBACK_ENABLED: "maybe" })).toThrow(
+      /AUTO_ROLLBACK_ENABLED/
+    );
+  });
+
+  it("rejects a threshold outside 0..1", () => {
+    expect(() =>
+      loadAutoRollbackConfig({ ROLLBACK_ERROR_RATE_THRESHOLD: "1.5" })
+    ).toThrow(/ROLLBACK_ERROR_RATE_THRESHOLD/);
+  });
+
+  it("rejects a non-numeric threshold", () => {
+    expect(() =>
+      loadAutoRollbackConfig({ ROLLBACK_ERROR_RATE_THRESHOLD: "abc" })
+    ).toThrow(/ROLLBACK_ERROR_RATE_THRESHOLD/);
+  });
+
+  it("rejects a non-integer window", () => {
+    expect(() =>
+      loadAutoRollbackConfig({ ROLLBACK_SOAK_WINDOW_MS: "12.5" })
+    ).toThrow(/ROLLBACK_SOAK_WINDOW_MS/);
+  });
+
+  it("rejects a negative minimum request count", () => {
+    expect(() =>
+      loadAutoRollbackConfig({ ROLLBACK_MIN_REQUESTS: "-1" })
+    ).toThrow(/ROLLBACK_MIN_REQUESTS/);
+  });
+
+  it("treats empty strings as unset and falls back to defaults", () => {
+    const cfg = loadAutoRollbackConfig({ ROLLBACK_ERROR_RATE_THRESHOLD: "" });
+    expect(cfg.errorRateThreshold).toBe(0.05);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// monitorAndAutoRollback — post-switch soak
+// ---------------------------------------------------------------------------
+
+describe("monitorAndAutoRollback", () => {
+  // Keep decision logs out of the test output while still exercising them.
+  beforeEach(() => {
+    setWriteRecordImpl(() => {});
+  });
+
+  afterAll(() => {
+    setWriteRecordImpl((record) => {
+      process.stdout.write(JSON.stringify(record) + "\n");
+    });
+  });
+
+  // Fast, deterministic soak for tests.
+  const fastSoak = { soakWindowMs: 30, sampleIntervalMs: 10, minRequests: 10 };
+
+  it("retains a healthy deployment (no rollback)", async () => {
+    await switchToGreen();
+    setErrorRateReader(
+      readerFromSequence([
+        { totalRequests: 0, errorRequests: 0 }, // baseline
+        { totalRequests: 200, errorRequests: 0 }, // all healthy traffic
+      ])
+    );
+
+    const result = await monitorAndAutoRollback(fastSoak);
+
+    expect(result.rolledBack).toBe(false);
+    expect(result.reason).toBe("healthy");
+    expect(result.peakErrorRate).toBe(0);
+    expect((await getStatus()).activeColor).toBe("green");
+  });
+
+  it("auto-rolls back when the error-rate threshold is breached", async () => {
+    await switchToGreen();
+    setErrorRateReader(
+      readerFromSequence([
+        { totalRequests: 0, errorRequests: 0 }, // baseline
+        { totalRequests: 100, errorRequests: 50 }, // 50% errors → breach
+      ])
+    );
+
+    const result = await monitorAndAutoRollback({
+      ...fastSoak,
+      errorRateThreshold: 0.1,
+    });
+
+    expect(result.rolledBack).toBe(true);
+    expect(result.reason).toBe("breached");
+    expect(result.peakErrorRate).toBeCloseTo(0.5);
+    // Rollback must be reflected by the persisted status.
+    expect((await getStatus()).activeColor).toBe("blue");
+  });
+
+  it("does not roll back on a sub-threshold error rate", async () => {
+    await switchToGreen();
+    setErrorRateReader(
+      readerFromSequence([
+        { totalRequests: 0, errorRequests: 0 },
+        { totalRequests: 100, errorRequests: 3 }, // 3% < 5% threshold
+      ])
+    );
+
+    const result = await monitorAndAutoRollback(fastSoak);
+
+    expect(result.rolledBack).toBe(false);
+    expect(result.reason).toBe("healthy");
+    expect((await getStatus()).activeColor).toBe("green");
+  });
+
+  it("ignores breaches on insufficient request volume", async () => {
+    await switchToGreen();
+    setErrorRateReader(
+      readerFromSequence([
+        { totalRequests: 0, errorRequests: 0 },
+        { totalRequests: 4, errorRequests: 4 }, // 100% errors but only 4 reqs
+      ])
+    );
+
+    const result = await monitorAndAutoRollback({ ...fastSoak, minRequests: 20 });
+
+    expect(result.rolledBack).toBe(false);
+    expect(result.reason).toBe("insufficient-data");
+    expect((await getStatus()).activeColor).toBe("green");
+  });
+
+  it("only counts traffic served after the switch (delta, not lifetime)", async () => {
+    await switchToGreen();
+    // Baseline already has historical errors; the window itself is clean.
+    setErrorRateReader(
+      readerFromSequence([
+        { totalRequests: 1000, errorRequests: 900 }, // baseline (pre-switch)
+        { totalRequests: 1100, errorRequests: 900 }, // +100 reqs, 0 new errors
+      ])
+    );
+
+    const result = await monitorAndAutoRollback(fastSoak);
+
+    expect(result.rolledBack).toBe(false);
+    expect(result.observedRequests).toBe(100);
+    expect(result.peakErrorRate).toBe(0);
+  });
+
+  it("skips the soak entirely when disabled", async () => {
+    await switchToGreen();
+    let called = false;
+    setErrorRateReader(async () => {
+      called = true;
+      return { totalRequests: 100, errorRequests: 100 };
+    });
+
+    const result = await monitorAndAutoRollback({ enabled: false });
+
+    expect(result.reason).toBe("disabled");
+    expect(result.rolledBack).toBe(false);
+    expect(called).toBe(false); // never sampled
+    expect((await getStatus()).activeColor).toBe("green");
+  });
+
+  it("is a no-op when green is not the active color", async () => {
+    // Still on blue — nothing was promoted, so there is nothing to soak.
+    let called = false;
+    setErrorRateReader(async () => {
+      called = true;
+      return { totalRequests: 100, errorRequests: 100 };
+    });
+
+    const result = await monitorAndAutoRollback(fastSoak);
+
+    expect(result.reason).toBe("not-green");
+    expect(result.rolledBack).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it("is idempotent: a second monitor after rollback does not re-revert", async () => {
+    await switchToGreen();
+    setErrorRateReader(
+      readerFromSequence([
+        { totalRequests: 0, errorRequests: 0 },
+        { totalRequests: 100, errorRequests: 80 },
+      ])
+    );
+
+    const first = await monitorAndAutoRollback(fastSoak);
+    expect(first.rolledBack).toBe(true);
+    expect((await getStatus()).activeColor).toBe("blue");
+
+    // Running again now that we're back on blue must be a safe no-op.
+    const second = await monitorAndAutoRollback(fastSoak);
+    expect(second.rolledBack).toBe(false);
+    expect(second.reason).toBe("not-green");
+    expect((await getStatus()).activeColor).toBe("blue");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readErrorRateFromRegistry — default metrics-backed reader
+// ---------------------------------------------------------------------------
+
+describe("readErrorRateFromRegistry", () => {
+  it("derives 5xx counts from http_requests_total in the registry", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { register, Counter } = require("prom-client");
+    register.removeSingleMetric("http_requests_total");
+    const counter = new Counter({
+      name: "http_requests_total",
+      help: "test counter",
+      labelNames: ["status_code"],
+      registers: [register],
+    });
+    counter.inc({ status_code: "200" }, 90);
+    counter.inc({ status_code: "503" }, 7);
+    counter.inc({ status_code: "500" }, 3);
+
+    const sample = await readErrorRateFromRegistry();
+    expect(sample.totalRequests).toBe(100);
+    expect(sample.errorRequests).toBe(10);
+
+    register.removeSingleMetric("http_requests_total");
+  });
+
+  it("returns zeroed counts when the metric is absent", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { register } = require("prom-client");
+    register.removeSingleMetric("http_requests_total");
+
+    const sample = await readErrorRateFromRegistry();
+    expect(sample).toEqual({ totalRequests: 0, errorRequests: 0 });
   });
 });
