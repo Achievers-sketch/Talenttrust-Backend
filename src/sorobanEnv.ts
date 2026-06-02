@@ -43,6 +43,15 @@ const sorobanEnvSchema = z.object({
    * Optional — only required when token transfer flows are active.
    */
   SOROBAN_TOKEN_CONTRACT_ID: sorobanContractId.optional(),
+  /**
+   * Optional pinned metadata hash for the escrow contract (SHA-256 hex, 64 chars).
+   * When provided, runtime modules should verify fetched on-chain metadata
+   * matches this value before performing sensitive operations.
+   */
+  SOROBAN_ESCROW_CONTRACT_METADATA_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, 'SOROBAN_ESCROW_CONTRACT_METADATA_HASH must be a 64-character hex string')
+    .optional(),
 });
 
 /** Raw validated shape (SCREAMING_SNAKE_CASE keys from zod). */
@@ -54,6 +63,7 @@ export interface SorobanEnv {
   sorobanNetworkPassphrase: string;
   sorobanEscrowContractId?: string;
   sorobanTokenContractId?: string;
+  sorobanEscrowContractMetadataHash?: string;
 }
 
 function toSorobanEnv(raw: RawSorobanEnv): SorobanEnv {
@@ -62,6 +72,7 @@ function toSorobanEnv(raw: RawSorobanEnv): SorobanEnv {
     sorobanNetworkPassphrase: raw.SOROBAN_NETWORK_PASSPHRASE,
     sorobanEscrowContractId: raw.SOROBAN_ESCROW_CONTRACT_ID,
     sorobanTokenContractId: raw.SOROBAN_TOKEN_CONTRACT_ID,
+    sorobanEscrowContractMetadataHash: raw.SOROBAN_ESCROW_CONTRACT_METADATA_HASH,
   };
 }
 

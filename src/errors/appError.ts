@@ -72,6 +72,16 @@ export class ConflictError extends AppError {
 }
 
 /**
+ * Error thrown when fetched on-chain contract metadata does not match
+ * the pinned/expected value configured for the environment.
+ */
+export class ContractMetadataMismatchError extends AppError {
+  constructor(message = 'Contract metadata mismatch') {
+    super(400, 'contract_metadata_mismatch', message, false);
+  }
+}
+
+/**
  * Validation error - business rule validation failure.
  */
 export class ValidationError extends AppError {
