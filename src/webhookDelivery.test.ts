@@ -40,13 +40,28 @@ function makeRegistry() {
 function makeService(
   registry: Registry,
   breakerConfig: { failureThreshold?: number; successThreshold?: number; timeoutMs?: number } = {},
+  retryConfigOrCallback?: Partial<WebhookRetryConfig> | ((entry: DLQEntry) => Promise<void> | void),
+  dlqCallback?: (entry: DLQEntry) => Promise<void> | void,
 ) {
-  return new WebhookDeliveryService(registry, {
-    failureThreshold: 3,
-    successThreshold: 1,
-    timeoutMs: 50, // short cooldown so HALF_OPEN tests don't need real timers
-    ...breakerConfig,
-  });
+  const isRetryConfig =
+    typeof retryConfigOrCallback === 'object' &&
+    retryConfigOrCallback !== null &&
+    ('maxAttempts' in retryConfigOrCallback || 'initialDelayMs' in retryConfigOrCallback);
+
+  const retryConfig = isRetryConfig ? (retryConfigOrCallback as Partial<WebhookRetryConfig>) : undefined;
+  const callback = isRetryConfig ? dlqCallback : (retryConfigOrCallback as ((entry: DLQEntry) => Promise<void> | void) | undefined);
+
+  return new WebhookDeliveryService(
+    registry,
+    {
+      failureThreshold: 3,
+      successThreshold: 1,
+      timeoutMs: 50,
+      ...breakerConfig,
+    },
+    retryConfig,
+    callback,
+  );
 }
 
 const basePayload: DeliveryPayload = {

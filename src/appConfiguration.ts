@@ -30,6 +30,7 @@ export interface AppConfig {
   chaosTargets: string[];
   chaosProbability: number;
   circuitBreaker: CircuitBreakerConfig;
+  webhookRetry: WebhookRetryConfig;
   /**
    * Per-provider circuit-breaker configuration for outbound webhook delivery.
    * Thresholds are intentionally separate from the RPC circuit breaker so
@@ -116,6 +117,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       failureThreshold: clamp(toNumber(env.CB_FAILURE_THRESHOLD, 5), 1, 100),
       successThreshold: clamp(toNumber(env.CB_SUCCESS_THRESHOLD, 1), 1, 20),
       timeoutMs: clamp(toNumber(env.CB_TIMEOUT_MS, 30_000), 1_000, 300_000),
+    },
+    webhookRetry: {
+      maxAttempts: clamp(toNumber(env.WEBHOOK_RETRY_MAX_ATTEMPTS, 5), 1, 20),
+      initialDelayMs: clamp(toNumber(env.WEBHOOK_RETRY_INITIAL_DELAY_MS, 1_000), 100, 60_000),
+      maxDelayMs: clamp(toNumber(env.WEBHOOK_RETRY_MAX_DELAY_MS, 30_000), 1_000, 600_000),
+      multiplier: clamp(toNumber(env.WEBHOOK_RETRY_MULTIPLIER, 2), 1, 10),
+      jitterFactor: clamp(toNumber(env.WEBHOOK_RETRY_JITTER_FACTOR, 0.1), 0, 1),
     },
     webhookCircuitBreaker: {
       failureThreshold: clamp(toNumber(env.WEBHOOK_CB_FAILURE_THRESHOLD, 5), 1, 100),
