@@ -38,3 +38,22 @@ export function redactObject(obj: Record<string, unknown>): Record<string, unkno
   }
   return out;
 }
+
+/**
+ * Top-level payload redaction wrapper added for DLQ replay pipelines.
+ * Safely accepts unknown structures and runs recursive redactions on arrays and objects.
+ * @param payload - The incoming webhook message payload data structure.
+ * @returns Sanitised payload data where all sensitive parameters are scrubbed.
+ */
+export function redactPayload(payload: unknown): any {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.map(item => redactPayload(item));
+  }
+
+  // Delegate safely to your pre-existing, robust object sanitisation rule
+  return redactObject(payload as Record<string, unknown>);
+}

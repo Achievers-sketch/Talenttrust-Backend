@@ -4,12 +4,19 @@ import { QueueManager, JobType } from '../queue';
 import { auditService } from '../audit/service';
 import { auditStore } from '../audit/store';
 import { Registry } from 'prom-client';
+import { jobsRouter, initializeJobs } from './jobs';
+import { WebhookDeliveryService } from '../services/WebhookDeliveryService';
+import { IdempotencyLayer } from '../events/idempotency';
 import {
   WebhookDLQStorage,
   clearWebhookDLQInstance,
   initializeDLQMetrics,
   resetDLQMetrics,
 } from '../queue/webhook-dlq';
+
+// Mock upstream handling layers to isolate endpoint integration
+jest.mock('../services/WebhookDeliveryService');
+jest.mock('../events/idempotency');
 
 describe('Jobs DLQ API', () => {
   let queueManager: QueueManager;
@@ -369,5 +376,122 @@ describe('DLQ Metrics Integration', () => {
     const metrics = await registry.getSingleMetricAsString('webhook_dlq_operations_total');
     expect(metrics).toContain('enqueue');
     expect(metrics).toContain('drop_poison');
+  });
+});
+
+describe('Issue #256: Idempotent DLQ Replay REST Endpoints', () => {
+  let storage: any;
+  let testApp: express.Express;
+  const mockId = 'dlq_item_uuid_101';
+  const mockEvtId = 'evt_sig_alpha_09';
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    // Create an express app mounting the jobsRouter directly
+    testApp = express();
+    testApp.use(express.json());
+    testApp.use(jobsRouter);
+
+    // Provide the dynamic mocked storage shape satisfying your customized store adapter
+    storage = {
+      getEntryById: jest.fn(),
+      removeEntry: jest.fn(),
+      incrementReplayAttempts: jest.fn(),
+    };
+    
+    initializeJobs(storage);
+  });
+
+  it('should successfully replay an authentic DLQ message and redact secrets', async () => {
+    storage.getEntryById.mockResolvedValue({
+      id: mockId,
+      eventId: mockEvtId,
+      targetUrl: 'https://endpoint.talenttrust.io/webhook',
+      payload: { data: 'clean_payload', webhookSecret: 'sk_live_9901' },
+    });
+    
+    (IdempotencyLayer.isEventProcessed as jest.Mock).mockResolvedValue(false);
+    (WebhookDeliveryService.deliverRaw as jest.Mock).mockResolvedValue(true);
+
+    const res = await request(testApp)
+      .post(`/jobs/dlq/${mockId}/replay`)
+      .set('Authorization', 'Bearer demo-admin-token')
+      .send({ reason: 'Operator manual recovery verification' })
+      .expect(200);
+
+    expect(res.body.status).toBe('success');
+    expect(WebhookDeliveryService.deliverRaw).toHaveBeenCalledWith(
+      'https://endpoint.talenttrust.io/webhook',
+      mockEvtId,
+      expect.objectContaining({ webhookSecret: '[REDACTED]' })
+    );
+    expect(storage.removeEntry).toHaveBeenCalledWith(mockId);
+    expect(IdempotencyLayer.markEventProcessed).toHaveBeenCalledWith(mockEvtId);
+  });
+
+  it('should guarantee safety via an idempotent short-circuit when duplicate replays are triggered', async () => {
+    storage.getEntryById.mockResolvedValue({
+      id: mockId,
+      eventId: mockEvtId,
+      targetUrl: 'https://endpoint.talenttrust.io/webhook',
+      payload: { data: 'duplicated_payload' },
+    });
+    
+    (IdempotencyLayer.isEventProcessed as jest.Mock).mockResolvedValue(true);
+
+    const res = await request(testApp)
+      .post(`/jobs/dlq/${mockId}/replay`)
+      .set('Authorization', 'Bearer demo-admin-token')
+      .send({ reason: 'Accidental dual execution action' })
+      .expect(200);
+
+    expect(res.body.status).toBe('ignored');
+    expect(res.body.reason).toContain('Idempotent no-op');
+    expect(WebhookDeliveryService.deliverRaw).not.toHaveBeenCalled();
+    expect(storage.removeEntry).not.toHaveBeenCalled();
+  });
+
+  it('should process a batch array of DLQ IDs with mixed results accurately', async () => {
+    const secondMockId = 'dlq_item_uuid_102';
+    const secondMockEvtId = 'evt_sig_alpha_10';
+
+    storage.getEntryById
+      .mockResolvedValueOnce({
+        id: mockId,
+        eventId: mockEvtId,
+        targetUrl: 'https://endpoint.talenttrust.io/webhook',
+        payload: { data: 'first_payload' },
+      })
+      .mockResolvedValueOnce({
+        id: secondMockId,
+        eventId: secondMockEvtId,
+        targetUrl: 'https://endpoint.talenttrust.io/webhook',
+        payload: { data: 'second_payload' },
+      });
+
+    // First event unique, second event is a duplicate no-op
+    (IdempotencyLayer.isEventProcessed as jest.Mock)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    (WebhookDeliveryService.deliverRaw as jest.Mock).mockResolvedValue(true);
+
+    const res = await request(testApp)
+      .post('/jobs/dlq/replay')
+      .set('Authorization', 'Bearer demo-admin-token')
+      .send({
+        ids: [mockId, secondMockId],
+        reason: 'Operator batch processing execution',
+      })
+      .expect(200);
+
+    expect(res.body.status).toBe('batch_completed');
+    expect(res.body.details.successCount).toBe(1);
+    expect(res.body.details.noOpCount).toBe(1);
+    expect(res.body.details.failureCount).toBe(0);
+    
+    expect(storage.removeEntry).toHaveBeenCalledTimes(1);
+    expect(storage.removeEntry).toHaveBeenCalledWith(mockId);
   });
 });
