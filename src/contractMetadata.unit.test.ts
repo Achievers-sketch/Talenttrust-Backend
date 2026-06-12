@@ -43,8 +43,8 @@ describe('contractMetadata module', () => {
     const metrics = await register.getMetricsAsJSON();
     const metric = metrics.find((m: any) => m.name === 'contract_metadata_mismatch_total');
     expect(metric).toBeDefined();
-    const val = metric.values?.find((v: any) => v.labels && v.labels.contract === 'CABC');
+    const val = metric!.values?.find((v: any) => v.labels && v.labels.contract === 'CABC');
     expect(val).toBeDefined();
-    expect(val.value).toBe(1);
+    expect(val!.value).toBe(1);
   });
 });
