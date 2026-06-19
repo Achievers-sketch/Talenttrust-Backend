@@ -1,3 +1,41 @@
+## Response Envelope Contract
+
+All API endpoints return a consistent JSON envelope.
+
+### Success Response
+
+```json
+{
+  "status": "success",
+  "data": <payload>,
+  "meta": <optional pagination or extra metadata>,
+  "requestId": "trace-id-from-request"
+}
+```
+
+### Error Response
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "machine_readable_code",
+    "message": "Human readable message",
+    "requestId": "trace-id-from-request"
+  }
+}
+```
+
+### Helper Functions
+
+Use `ok(res, data, meta?, status?)` and `fail(res, code, message, status?)` 
+from `src/utils/apiResponse.ts` in all controllers.
+
+- `requestId` is always included from `res.locals.requestId`
+- Falls back to `"unknown"` if requestId is not set
+- `meta` is omitted from the response when not provided
+
+---
 # TalentTrust Backend API Documentation
 
 ## Overview

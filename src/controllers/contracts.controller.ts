@@ -6,18 +6,9 @@ import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/c
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
 import { NotFoundError } from '../errors/appError';
 import { parsePaginationQuery, applyPagination } from '../utils/pagination';
+import { ok, fail } from '../utils/apiResponse';
 
 const contractsService = new ContractsService(new ContractRepository(getDb()));
-
-/**
- * Standard API response envelope for consistent responses
- */
-interface ApiResponse<T = any> {
-  status: 'success' | 'error';
-  data?: T;
-  message?: string;
-  error?: string;
-}
 
 interface ContractIdParams {
   id: string;
@@ -38,14 +29,7 @@ export class ContractsController {
     try {
       const pagination = parsePaginationQuery((req.query ?? {}) as Record<string, unknown>);
       if (!pagination.ok) {
-        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
-        res.status(400).json({
-          error: {
-            code: 'bad_request',
-            message: pagination.error,
-            requestId,
-          },
-        });
+        fail(res, 'bad_request', pagination.error, 400);
         return;
       }
 
@@ -54,15 +38,11 @@ export class ContractsController {
       const pageItems = applyPagination(allContracts, { page, limit, offset });
       const total = allContracts.length;
 
-      res.status(200).json({
-        status: 'success',
-        data: pageItems,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages: Math.ceil(total / limit),
-        },
+      ok(res, pageItems, {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
       });
     } catch (error) {
       next(error);
@@ -79,7 +59,7 @@ export class ContractsController {
       if (!contract) {
         throw new NotFoundError('The requested resource was not found');
       }
-      res.status(200).json({ status: 'success', data: contract });
+      ok(res, contract);
     } catch (error) {
       next(error);
     }
@@ -93,17 +73,10 @@ export class ContractsController {
     try {
       const data: CreateContractDto = req.body;
       const newContract = await contractsService.createContract(data);
-      
-      const response: ApiResponse = {
-        status: 'success',
-        data: newContract,
-        message: 'Contract created successfully',
-      };
-      
-      res.status(201).json(response);
+      ok(res, newContract, undefined, 201);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
-        res.status(422).json({ status: 'error', message: error.message });
+        fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
       next(error);
@@ -118,19 +91,11 @@ export class ContractsController {
     try {
       const { id } = req.params as unknown as ContractIdParams;
       const updateData: UpdateContractDto = req.body;
-      
       const updatedContract = await contractsService.updateContract(id, updateData);
-      
-      const response: ApiResponse = {
-        status: 'success',
-        data: updatedContract,
-        message: 'Contract updated successfully',
-      };
-      
-      res.status(200).json(response);
+      ok(res, updatedContract);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
-        res.status(422).json({ status: 'error', message: error.message });
+        fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
       next(error);
@@ -145,13 +110,7 @@ export class ContractsController {
     try {
       const { id } = req.params as unknown as ContractIdParams;
       await contractsService.deleteContract(id);
-      
-      const response: ApiResponse = {
-        status: 'success',
-        message: 'Contract deleted successfully',
-      };
-      
-      res.status(200).json(response);
+      ok(res, { message: 'Contract deleted successfully' });
     } catch (error) {
       next(error);
     }
@@ -164,23 +123,10 @@ export class ContractsController {
   public static async getContractStats(req: Request, res: Response, next: NextFunction) {
     try {
       const stats = await contractsService.getContractStats();
-      
-      const response: ApiResponse = {
-        status: 'success',
-        data: stats,
-      };
-      
-      res.status(200).json(response);
+      ok(res, stats);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
-        const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
-        res.status(422).json({
-          error: {
-            code: 'bad_request',
-            message: error.message,
-            requestId,
-          },
-        });
+        fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
       next(error);
@@ -192,6 +138,6 @@ export class ContractsController {
    * Returns the enforced per-contract limits for client discovery.
    */
   public static getBounds(_req: Request, res: Response) {
-    res.status(200).json({ status: 'success', data: CONTRACT_BOUNDS });
+    ok(res, CONTRACT_BOUNDS);
   }
 }
