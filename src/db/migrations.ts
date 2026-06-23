@@ -64,6 +64,24 @@ const MIGRATIONS: Migration[] = [
         );
       }
     },
+  {
+    version: 3,
+    name: "create_notifications_table",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notifications (
+          id        TEXT PRIMARY KEY,
+          user_id   TEXT NOT NULL,
+          title     TEXT NOT NULL,
+          message   TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_user_id
+          ON notifications(user_id);
+      `);
+    },
+  },
   },
 ];
 
