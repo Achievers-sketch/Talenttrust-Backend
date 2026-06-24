@@ -13,7 +13,7 @@
  * unbounded memory growth in production.
  *
  * @security
- *   - Keys are hashed before storage to avoid leaking raw IPs in memory dumps.
+ *   - Keys are hashed before storage to avoid leaking raw IPs in heap snapshots.
  *   - Blocked entries survive the sweep until `blockedUntil` passes.
  */
 
@@ -34,12 +34,19 @@ export interface StoreOptions {
 export class RateLimitStore {
   private readonly store = new Map<string, RateLimitEntry>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private _destroyed = false;
 
   constructor(options: StoreOptions = {}) {
     const interval = options.sweepIntervalMs ?? 60_000;
-    this.sweepTimer = setInterval(() => this.sweep(), interval);
-    // Allow Node to exit even if this timer is active
-    if (this.sweepTimer.unref) this.sweepTimer.unref();
+    if (interval > 0) {
+      this.sweepTimer = setInterval(() => this.sweep(), interval);
+      if (this.sweepTimer.unref) this.sweepTimer.unref();
+    }
+  }
+
+  /** Returns true if the store has been destroyed. */
+  get destroyed(): boolean {
+    return this._destroyed;
   }
 
   /**
@@ -75,6 +82,7 @@ export class RateLimitStore {
    * Called automatically; exposed for testing.
    */
   sweep(windowMs = 60_000): void {
+    if (this._destroyed) return;
     const now = Date.now();
     for (const [key, entry] of this.store.entries()) {
       const windowExpired = now - entry.windowStart > windowMs;
@@ -85,8 +93,9 @@ export class RateLimitStore {
     }
   }
 
-  /** Stop the background sweep (call in tests / shutdown). */
+  /** Stop the background sweep and clear all entries. */
   destroy(): void {
+    this._destroyed = true;
     if (this.sweepTimer) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;

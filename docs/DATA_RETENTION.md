@@ -432,6 +432,87 @@ class CustomPolicyEngine extends RetentionPolicyEngine {
 3. Consider async/worker processing for large datasets
 4. Monitor storage provider performance
 
+## Data Purge with Dry-Run Mode
+
+The purge module (`src/retention/purge.ts`) provides safe data purging capabilities with a dry-run mode that reports candidate row counts per table without deleting anything.
+
+### Dry-Run Flag
+
+The dry-run mode can be enabled in two ways:
+
+1. **Command-line flag**: `--dry-run` or `--dry-run=true`
+2. **Environment variable**: `RETENTION_DRY_RUN=true`
+
+### Usage
+
+```typescript
+import { executePurge, runPurge } from './retention/purge';
+import { StorageManager, InMemoryStorageProvider } from './retention';
+
+const storageManager = new StorageManager(
+  new InMemoryStorageProvider(),
+  new InMemoryStorageProvider(),
+);
+
+// Dry-run: count candidates without deleting
+const dryRunResult = await executePurge(storageManager, 30, { dryRun: true });
+console.log(dryRunResult.candidates);
+// Output: [{ table: 'local_data', count: 5 }, { table: 'cold_storage', count: 2 }]
+
+// Real purge: actually delete data
+const purgeResult = await executePurge(storageManager, 30, { dryRun: false });
+console.log(`Deleted ${purgeResult.deleted} rows`);
+```
+
+### Dry-Run Behavior
+
+When dry-run mode is enabled:
+
+- Reports candidate row counts per table (local_data, cold_storage, encrypted_archive)
+- Does NOT delete any data
+- Uses the exact same query logic as the real purge — no separate queries
+- All output is redacted through `redact.ts` — no raw PII in logs
+
+### Command-Line Usage
+
+```bash
+# Dry-run mode via flag
+node dist/scripts/purge.js --dry-run
+
+# Dry-run mode via environment variable
+RETENTION_DRY_RUN=true node dist/scripts/purge.js
+
+# Real purge (no dry-run flag)
+node dist/scripts/purge.js
+```
+
+### Output Format
+
+Dry-run output shows candidate counts per table:
+
+```
+[DRY-RUN] Purge candidates:
+  local_data: 5 rows
+  cold_storage: 2 rows
+  encrypted_archive: 0 rows
+```
+
+Real purge output shows both candidates and deletion results:
+
+```
+[PURGE] Purge candidates:
+  local_data: 5 rows
+  cold_storage: 2 rows
+[PURGE] Deleted: 7 rows, Failed: 0
+```
+
+### Safety Guarantees
+
+- Dry-run mode never modifies data
+- Same query logic ensures dry-run counts match actual purge counts
+- All log output is redacted to prevent PII leakage
+- Failed deletions are tracked separately
+
 ## Future Enhancements
 
 - [ ] Direct database integration

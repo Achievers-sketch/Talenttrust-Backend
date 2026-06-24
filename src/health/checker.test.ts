@@ -1,5 +1,5 @@
 import { runHealthCheck } from "./checker";
-import { Probe, ProbeResult } from "./types";
+import { Probe } from "./types";
 
 const okProbe =
   (name: string): Probe =>

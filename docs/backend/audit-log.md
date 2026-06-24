@@ -10,11 +10,15 @@ The TalentTrust audit log provides **immutable, tamper-evident recording** of al
 
 ```
 src/audit/
-├── types.ts       — Core interfaces and type definitions
-├── store.ts       — Append-only, hash-chained in-memory store
-├── service.ts     — Application-level facade with convenience wrappers
-├── middleware.ts  — Express middleware (attaches audit helper to res.locals)
-└── router.ts      — REST endpoints for querying the log
+├── types.ts                       — Core interfaces and type definitions
+├── repository.ts                  — Repository interface + backend selection
+├── store.ts                       — In-memory repository implementation
+├── sqliteRepository.ts            — Durable SQLite repository implementation
+├── service.ts                     — Application-level facade with convenience wrappers
+├── redact.ts                      — Deterministic redaction rules (headers, body, email)
+├── middleware.ts                  — Express middleware (attaches audit helper to res.locals)
+├── protectedEndpointMiddleware.ts — Auto-audit middleware for auth-protected routes
+└── router.ts                      — REST endpoints for querying the log
 ```
 
 ### Hash Chain (Tamper-Evidence)
@@ -51,23 +55,25 @@ interface AuditEntry {
 
 ### Supported Actions
 
-| Action                | Severity  | Description                        |
-|-----------------------|-----------|------------------------------------|
-| `CONTRACT_CREATED`    | INFO      | New contract created               |
-| `CONTRACT_UPDATED`    | INFO      | Contract fields modified           |
-| `CONTRACT_CANCELLED`  | INFO      | Contract cancelled                 |
-| `CONTRACT_COMPLETED`  | INFO      | Contract marked complete           |
-| `PAYMENT_INITIATED`   | CRITICAL  | Payment escrow initiated           |
-| `PAYMENT_RELEASED`    | CRITICAL  | Escrow funds released              |
-| `PAYMENT_DISPUTED`    | CRITICAL  | Payment dispute raised             |
-| `REPUTATION_UPDATED`  | INFO      | Reputation score changed           |
-| `USER_CREATED`        | INFO      | New user registered                |
-| `USER_UPDATED`        | INFO      | User profile updated               |
-| `USER_DELETED`        | WARNING   | User account deleted               |
-| `AUTH_LOGIN`          | INFO      | Successful authentication          |
-| `AUTH_LOGOUT`         | INFO      | User logged out                    |
-| `AUTH_FAILED`         | WARNING   | Failed authentication attempt      |
-| `ADMIN_ACTION`        | CRITICAL  | Administrative operation performed |
+| Action                | Severity  | Description                                      |
+|-----------------------|-----------|--------------------------------------------------|
+| `CONTRACT_CREATED`    | INFO      | New contract created                             |
+| `CONTRACT_UPDATED`    | INFO      | Contract fields modified                         |
+| `CONTRACT_CANCELLED`  | INFO      | Contract cancelled                               |
+| `CONTRACT_COMPLETED`  | INFO      | Contract marked complete                         |
+| `PAYMENT_INITIATED`   | CRITICAL  | Payment escrow initiated                         |
+| `PAYMENT_RELEASED`    | CRITICAL  | Escrow funds released                            |
+| `PAYMENT_DISPUTED`    | CRITICAL  | Payment dispute raised                           |
+| `REPUTATION_UPDATED`  | INFO      | Reputation score changed                         |
+| `USER_CREATED`        | INFO      | New user registered                              |
+| `USER_UPDATED`        | INFO      | User profile updated                             |
+| `USER_DELETED`        | WARNING   | User account deleted                             |
+| `AUTH_LOGIN`          | INFO      | Successful authentication                        |
+| `AUTH_LOGOUT`         | INFO      | User logged out                                  |
+| `AUTH_FAILED`         | WARNING   | Failed authentication or authorisation attempt   |
+| `ADMIN_ACTION`        | CRITICAL  | Administrative operation performed               |
+| `ENDPOINT_ACCESS`     | INFO      | Read-only access to a protected endpoint (GET)   |
+| `ENDPOINT_MUTATION`   | INFO      | Write operation on a protected endpoint (POST/PUT/PATCH/DELETE) |
 
 ---
 
@@ -128,7 +134,7 @@ if (!report.valid) {
 
 All endpoints are mounted at `/api/v1/audit`.
 
-> **Security**: These endpoints must be protected by authentication and restricted to `admin`/`auditor` roles in production.
+> **Security**: These endpoints are protected by JWT authentication and restricted to `admin`/`auditor` roles in the main application.
 
 ### `GET /api/v1/audit`
 
@@ -175,6 +181,143 @@ Verify the hash chain. Returns `200` if valid, `409` if corruption is detected.
 
 Retrieve a single entry by UUID. Returns `404` if not found.
 
+### `GET /api/v1/audit/export`
+
+Generate a file-backed newline-delimited JSON (`application/x-ndjson`) export and
+stream it back as an attachment for compliance downloads.
+
+Security and operational notes:
+
+- Access is limited to `admin` and `auditor` roles.
+- A dedicated export rate limit applies separately from standard API reads.
+- The export file is created only inside a controlled local temp directory.
+- No user-supplied path or URL is ever dereferenced, preventing path traversal and SSRF.
+- Export filters match the query endpoint (`action`, `severity`, `actor`, `resource`, `resourceId`, `from`, `to`, `limit`, `offset`).
+- Export requests support larger result sets than the interactive query endpoint, up to the configured export cap.
+
+---
+
+## Automatic Audit Logging for Protected Endpoints
+
+`protectedEndpointAuditMiddleware` (in `src/audit/protectedEndpointMiddleware.ts`)
+automatically emits a structured `AuditEntry` for **every request** that flows
+through an auth-protected router — including authentication failures.
+
+### How it works
+
+The middleware registers a `res.on('finish')` hook so it writes the entry
+**after** the complete middleware chain has executed. This means the final HTTP
+status code and the `req.user` identity (set by `authenticateMiddleware`) are
+both available when the entry is written.
+
+### Mounting
+
+```typescript
+import { protectedEndpointAuditMiddleware } from './audit/protectedEndpointMiddleware';
+import { authenticateMiddleware } from './auth/authenticate';
+
+// Mount BEFORE auth so the finish hook is always registered
+router.use(protectedEndpointAuditMiddleware);
+router.use(authenticateMiddleware);
+router.get('/contracts', handler);
+```
+
+### Action and severity mapping
+
+| Condition                              | `action`            | `severity` |
+|----------------------------------------|---------------------|------------|
+| HTTP 401 (missing/invalid credentials) | `AUTH_FAILED`       | `WARNING`  |
+| HTTP 403 (insufficient permissions)    | `AUTH_FAILED`       | `WARNING`  |
+| GET or HEAD + 2xx/3xx                  | `ENDPOINT_ACCESS`   | `INFO`     |
+| POST / PUT / PATCH / DELETE + 2xx      | `ENDPOINT_MUTATION` | `INFO`     |
+| Any method + 4xx/5xx (non-auth)        | method-derived above| `WARNING`  |
+
+### Traceability
+
+The `requestId` placed in `res.locals.requestId` by `requestIdMiddleware` is
+used as the `correlationId` on every entry, enabling end-to-end request tracing
+across logs and the audit trail.
+
+---
+
+## Redaction Policy
+
+All data written to the audit log passes through the deterministic redaction
+rules defined in `src/audit/redact.ts`. The rules are pure functions — the same
+input always produces the same output, with no side-effects.
+
+### HTTP headers
+
+Any header whose name (case-insensitive) matches the list below is replaced
+entirely with `'[REDACTED]'` before being stored:
+
+| Header name         | Reason                                       |
+|---------------------|----------------------------------------------|
+| `authorization`     | Bearer tokens / API credentials              |
+| `cookie`            | Session identifiers                          |
+| `set-cookie`        | Session identifiers set by the server        |
+| `x-api-key`         | API key credentials                          |
+| `x-auth-token`      | Alternative authentication tokens            |
+| `x-access-token`    | OAuth / JWT access tokens                    |
+
+All other headers are stored verbatim.
+
+### Request body and query string fields
+
+Any object key whose name (lowercased) contains one of the following substrings
+has its **value** replaced with `'[REDACTED]'`. Redaction is applied recursively
+to nested objects and array elements.
+
+| Substring matched   | Example keys that are redacted               |
+|---------------------|----------------------------------------------|
+| `password`          | `password`, `userPassword`, `newPassword`    |
+| `secret`            | `secret`, `clientSecret`, `sharedSecret`     |
+| `token`             | `token`, `accessToken`, `refreshToken`       |
+| `credential`        | `credential`, `apiCredential`                |
+| `apikey`            | `apikey`, `apiKey`                           |
+| `api_key`           | `api_key`                                    |
+| `private`           | `privateKey`, `privateData`                  |
+
+### Email address masking
+
+String values that match the pattern `local@domain` are partially masked to
+retain minimal identifiability for audit correlation while protecting PII:
+
+```
+alice@example.com  →  ali***@example.com
+ab@host.io         →  ab***@host.io
+```
+
+Masking is applied during body and metadata traversal. Header values are always
+either fully redacted or kept verbatim (never partially masked).
+
+### Primitives
+
+Numbers, booleans, and `null`/`undefined` pass through unmodified.
+
+### Example: what the audit entry `metadata` looks like
+
+**Raw request:**
+```json
+{
+  "headers": { "authorization": "Bearer eyJ...", "content-type": "application/json" },
+  "body": { "username": "alice@example.com", "password": "hunter2" }
+}
+```
+
+**After redaction (stored in audit log):**
+```json
+{
+  "method": "POST",
+  "path": "/api/v1/users",
+  "statusCode": 201,
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "headers": { "authorization": "[REDACTED]", "content-type": "application/json" },
+  "body": { "username": "ali***@example.com", "password": "[REDACTED]" },
+  "query": null
+}
+```
+
 ---
 
 ## Security Considerations
@@ -193,8 +336,11 @@ Retrieve a single entry by UUID. Returns `404` if not found.
 
 ### Production Hardening Checklist
 
-- [ ] Replace in-memory store with a write-once database (PostgreSQL with no `UPDATE`/`DELETE` grants, or an append-only table with row-level security)
-- [ ] Gate `/api/v1/audit` endpoints behind JWT authentication + `auditor` role check
+- [x] Repository pattern implemented with pluggable backends (`memory`, `sqlite`)
+- [x] Durable SQLite backend available via `AUDIT_STORAGE_BACKEND=sqlite`
+- [ ] For production, use a write-once policy (no `UPDATE`/`DELETE` grants) and strict file/database access controls
+- [x] Gate `/api/v1/audit` endpoints behind JWT authentication + `admin`/`auditor` role check
+- [x] Rate-limit `/api/v1/audit/export` separately from standard API traffic
 - [ ] Rate-limit the `/integrity` endpoint (it scans the full log)
 - [ ] Run `verifyIntegrity()` on a scheduled job and alert on failure
 - [ ] Ensure `app.set('trust proxy', true)` is set when behind a load balancer so `req.ip` is accurate

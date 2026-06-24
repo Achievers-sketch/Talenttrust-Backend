@@ -32,10 +32,45 @@ Cross-Origin Resource Sharing is restricted to authorized origins to prevent una
   - `http://localhost:3000` (Default Development)
   - `http://localhost:3001` (Default Development)
   - Configurable via `ALLOWED_ORIGINS` environment variable (comma-separated list).
+  - **Production Restriction**: Wildcard origin (`*`) is strictly denied in production mode (`NODE_ENV=production`)
 - **Allowed Methods**: `GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`, `PATCH`.
 - **Allowed Headers**: `Content-Type`, `Authorization`.
 - **Credentials**: Enabled (Allows sending cookies/authorization headers).
 - **Max Age**: 86400 seconds (24 hours cache for preflight requests).
+
+### Validation Rules
+
+The CORS configuration is validated at application startup:
+
+1. **Wildcard Denial in Production**: If `NODE_ENV=production` and the allowlist contains `*`, the application will fail to start with error: "Wildcard CORS origin (*) is not allowed in production mode"
+2. **Empty Allowlist Prevention**: The allowlist cannot be empty. If no origins are configured, defaults to localhost origins.
+3. **Origin Format Validation**: Origins that don't start with `http://` or `https://` will trigger a warning (except for wildcard `*`).
+
+### Configuration Examples
+
+**Development (default)**:
+```bash
+# Uses default localhost origins
+NODE_ENV=development
+```
+
+**Development with custom origins**:
+```bash
+NODE_ENV=development
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:4200,http://127.0.0.1:3000
+```
+
+**Production**:
+```bash
+NODE_ENV=production
+ALLOWED_ORIGINS=https://app.talenttrust.com,https://admin.talenttrust.com
+```
+
+**Invalid (will fail in production)**:
+```bash
+NODE_ENV=production
+ALLOWED_ORIGINS=*  # ERROR: Wildcard not allowed in production
+```
 
 ## Threat Scenarios Mitigated
 

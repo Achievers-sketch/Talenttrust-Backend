@@ -110,22 +110,16 @@ describe('createApp()', () => {
   // ── Contracts endpoint ────────────────────────────────────────────────────
 
   describe('GET /api/v1/contracts', () => {
-    it('returns 200 with success payload', async () => {
+    // The contracts router now requires a valid JWT.  Tests that exercise the
+    // route without a token will receive 401, not 200.
+    it('returns 401 without Authorization header', async () => {
       const res = await request(server, 'GET', '/api/v1/contracts');
-      expect(res.statusCode).toBe(200);
-      const json = JSON.parse(res.body);
-      expect(json).toEqual(expect.objectContaining({ status: 'success', data: expect.any(Array) }));
+      expect(res.statusCode).toBe(401);
     });
 
-    it('responds with application/json content-type', async () => {
+    it('responds with application/json content-type on 401', async () => {
       const res = await request(server, 'GET', '/api/v1/contracts');
       expect(res.headers['content-type']).toMatch(/application\/json/);
-    });
-
-    it('data is empty by default', async () => {
-      const res = await request(server, 'GET', '/api/v1/contracts');
-      const json = JSON.parse(res.body);
-      expect(json.data).toHaveLength(0);
     });
   });
 
@@ -140,7 +134,9 @@ describe('createApp()', () => {
     it('returns JSON error body for unknown route', async () => {
       const res = await request(server, 'GET', '/unknown');
       const json = JSON.parse(res.body);
-      expect(json).toHaveProperty('error', 'Not Found');
+      expect(json.error).toEqual(
+        expect.objectContaining({ code: 'not_found', message: 'The requested resource was not found' }),
+      );
     });
 
     it('returns 404 for unknown nested path', async () => {

@@ -15,6 +15,7 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
 import type { Contract, ContractStatus } from "../db/types";
+import { VersionConflictError } from "../errors/appError";
 
 /** Row shape as returned from SQLite (snake_case columns). */
 interface ContractRow {
@@ -24,6 +25,7 @@ interface ContractRow {
   freelancer_id: string;
   amount: number;
   status: string;
+  version: number;
   created_at: string;
 }
 
@@ -36,6 +38,7 @@ function toContract(row: ContractRow): Contract {
     freelancerId: row.freelancer_id,
     amount: row.amount,
     status: row.status as ContractStatus,
+    version: row.version,
     createdAt: row.created_at,
   };
 }
@@ -105,7 +108,7 @@ export class ContractRepository {
    * @returns The newly created Contract.
    */
   create(
-    data: Omit<Contract, "id" | "createdAt" | "status"> & {
+    data: Omit<Contract, "id" | "createdAt" | "status" | "version"> & {
       status?: ContractStatus;
     },
   ): Contract {
@@ -114,10 +117,10 @@ export class ContractRepository {
     const status: ContractStatus = data.status ?? "draft";
 
     this.db
-      .prepare<[string, string, string, string, number, string, string]>(
+      .prepare<[string, string, string, string, number, string, number, string]>(
         `INSERT INTO contracts
-           (id, title, client_id, freelancer_id, amount, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (id, title, client_id, freelancer_id, amount, status, version, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -126,10 +129,11 @@ export class ContractRepository {
         data.freelancerId,
         data.amount,
         status,
+        0,
         createdAt,
       );
 
-    return { id, ...data, status, createdAt };
+    return { id, ...data, status, version: 0, createdAt };
   }
 
   /**
@@ -144,6 +148,43 @@ export class ContractRepository {
       .prepare<[string, string]>("UPDATE contracts SET status = ? WHERE id = ?")
       .run(status, id);
     return this.findById(id);
+  }
+
+  /**
+   * Atomically updates contract fields only when the stored version matches
+   * `expectedVersion`, then increments the version by 1.
+   *
+   * No SELECT precedes the UPDATE — the WHERE clause makes the check and
+   * increment a single atomic operation within SQLite's serialized write model.
+   *
+   * @param id              - UUID of the contract to update.
+   * @param fields          - Partial set of mutable fields to apply.
+   * @param expectedVersion - The version the caller last read; must match the
+   *                          stored version or the update is rejected.
+   * @returns The updated Contract (with incremented version).
+   * @throws {VersionConflictError} When `result.changes === 0` (id not found
+   *         or version mismatch — both require the client to re-fetch).
+   */
+  updateWithVersion(
+    id: string,
+    fields: Partial<Omit<Contract, "id" | "createdAt" | "version">>,
+    expectedVersion: number,
+  ): Contract {
+    const result = this.db
+      .prepare<[string | null, string | null, string, number]>(
+        `UPDATE contracts
+         SET title  = COALESCE(?, title),
+             status = COALESCE(?, status),
+             version = version + 1
+         WHERE id = ? AND version = ?`,
+      )
+      .run(fields.title ?? null, fields.status ?? null, id, expectedVersion);
+
+    if (result.changes === 0) {
+      throw new VersionConflictError();
+    }
+
+    return this.findById(id)!;
   }
 
   /**

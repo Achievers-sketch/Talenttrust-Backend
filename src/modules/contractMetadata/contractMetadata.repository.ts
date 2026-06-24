@@ -1,6 +1,6 @@
 import { database } from '../../database';
 import { ContractMetadata } from '../../database/schema';
-import { CreateContractMetadataRequest, UpdateContractMetadataRequest, PaginationQuery } from './contractMetadata.types';
+import { PaginationQuery } from './contractMetadata.types';
 
 /**
  * Repository layer for contract metadata operations

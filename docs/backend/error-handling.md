@@ -25,9 +25,10 @@ All handled API errors return the same JSON shape:
 
 ## Security Notes
 
-- Internal exception details are not exposed in `500` responses.
+- Internal exception details are never exposed in error responses, regardless of `NODE_ENV`.
 - Every response carries `x-request-id` for incident correlation.
 - API errors include the same `requestId` to simplify tracing while avoiding sensitive leakage.
+- Error messages are sanitized against known unsafe patterns (stack traces, file paths, SQL, credentials). See [`error-message-policy.md`](error-message-policy.md) for the full policy.
 
 ## Threat Scenarios Considered
 

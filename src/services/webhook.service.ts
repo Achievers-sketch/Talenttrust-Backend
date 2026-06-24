@@ -1,63 +1,139 @@
+
 import axios from 'axios';
-import { MetricsServiceLike } from '../observability';
+import { createWebhookSignature } from '../utils/webhook-signing.util';
+import { getWebhookDLQStorage, WebhookDLQEntry } from '../queue/webhook-dlq';
+import { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from '../queue/webhook-retry-policy';
 
 export interface WebhookPayload {
   id: string;
   url: string;
   data: unknown;
   retryCount: number;
+  webhookSecret?: string;
+  /** Optional correlation ID for distributed tracing across webhook deliveries. */
+  correlationId?: string;
 }
-
-interface DLQEntry extends WebhookPayload {
-  failedAt: Date;
-  lastError: string;
-}
-
-const MAX_RETRIES = 5;
-const INITIAL_DELAY = 1000; // 1 second
 
 export class WebhookService {
-  private dlq: DLQEntry[] = []; // In production, this would be a DB table or Redis list
+  private dlqStorage = getWebhookDLQStorage();
 
   constructor(private readonly metrics?: MetricsServiceLike) {}
 
   /**
-   * Sends a webhook with exponential backoff
+   * Sends a webhook payload with iterative bounded retry and DLQ fallback.
+   *
+   * @remarks
+   * Uses a bounded for-loop so no call stack growth occurs across retries.
+   * Retry policy and DLQ behavior are identical to the previous recursive version.
+   *
+   * @param payload - Webhook payload including URL, data, and retry state
    */
   async send(payload: WebhookPayload): Promise<void> {
-    try {
-      await axios.post(payload.url, payload.data, {
-        headers: { 'Content-Type': 'application/json' }
-      });
-      console.log(`Webhook ${payload.id} delivered successfully.`);
-      this.metrics?.recordWebhookDelivery('success');
-    } catch (error: any) {
-      if (payload.retryCount < MAX_RETRIES) {
-        const delay = INITIAL_DELAY * Math.pow(2, payload.retryCount);
-        payload.retryCount++;
+    const maxAttempts = WEBHOOK_RETRY_POLICY.maxRetries + 1;
+    let lastError: Error | undefined;
 
-        console.warn(`Webhook ${payload.id} failed. Retrying in ${delay}ms...`);
-        this.metrics?.recordWebhookDelivery('failure');
-        setTimeout(() => this.send(payload), delay);
-      } else {
-        this.handleToDLQ(payload, error.message);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+
+        if (payload.webhookSecret) {
+          const { signature, timestamp } = createWebhookSignature(
+            payload.data,
+            payload.webhookSecret,
+          );
+          headers['X-Signature'] = `sha256=${signature}`;
+          headers['X-Timestamp'] = timestamp.toString();
+        }
+
+        if (payload.correlationId) {
+          headers['X-Correlation-Id'] = payload.correlationId;
+        }
+
+        await axios.post(payload.url, payload.data, { headers });
+        return;
+      } catch (error: unknown) {
+        lastError = error as Error;
+        payload.retryCount = attempt + 1;
+
+        const isLastAttempt = attempt === maxAttempts - 1;
+        if (!isLastAttempt) {
+          const delay = calculateWebhookRetryDelay(attempt);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
       }
+    }
+
+    await this.persistToDLQ(payload, lastError?.message ?? 'Unknown error');
+  }
+
+  private async persistToDLQ(payload: WebhookPayload, error: string): Promise<void> {
+    try {
+      await this.dlqStorage.addEntry(
+        payload.id,
+        payload.url,
+        payload.data as Record<string, unknown>,
+        payload.retryCount,
+        error,
+        payload.webhookSecret,
+      );
+    } catch (err: unknown) {
+      if ((err as Error).message === 'DUPLICATE_ENTRY') {
+        return;
+      }
+      throw err;
     }
   }
 
-  private handleToDLQ(payload: WebhookPayload, error: string) {
-    const entry: DLQEntry = {
-      ...payload,
-      failedAt: new Date(),
-      lastError: error,
-    };
-    this.dlq.push(entry);
-    this.metrics?.recordWebhookDelivery('dlq');
-    this.metrics?.setWebhookDlqDepth(this.dlq.length);
-    console.error(`Webhook ${payload.id} moved to DLQ. Reason: ${error}`);
+  getDLQ(): Omit<WebhookDLQEntry, 'webhookSecret'>[] {
+    const entries = this.dlqStorage.listEntries();
+    return entries.map((entry) => {
+      const { webhookSecret, ...rest } = entry;
+      return rest;
+    });
   }
 
-  getDLQ() {
-    return this.dlq;
+  async getDLQEntry(id: string): Promise<Omit<WebhookDLQEntry, 'webhookSecret'> | null> {
+    const entry = this.dlqStorage.getEntry(id);
+    if (!entry) return null;
+    const { webhookSecret, ...rest } = entry;
+    return rest;
+  }
+
+  async replayDLQEntry(id: string): Promise<{ success: boolean; message: string }> {
+    const entry = this.dlqStorage.getEntry(id);
+    if (!entry) {
+      return { success: false, message: 'Entry not found' };
+    }
+
+    if (entry.replayedAt) {
+      return { success: false, message: 'Entry already replayed' };
+    }
+
+    const dedupe = this.dlqStorage.checkDedupe(entry.webhookId, entry.body);
+    if (dedupe.exists) {
+      this.dlqStorage.markReplayed(id);
+      return { success: true, message: 'Deduplicated - entry already pending replay' };
+    }
+
+    try {
+      await this.send({
+        id: entry.webhookId,
+        url: entry.url,
+        data: entry.body,
+        retryCount: 0,
+        webhookSecret: entry.webhookSecret,
+      });
+      this.dlqStorage.markReplayed(id);
+      return { success: true, message: 'Replay successful' };
+    } catch (err) {
+      return { success: false, message: (err as Error).message };
+    }
+  }
+
+  async getDLQStats(): Promise<{ total: number; pending: number; replayed: number }> {
+    return this.dlqStorage.getStats();
   }
 }
+

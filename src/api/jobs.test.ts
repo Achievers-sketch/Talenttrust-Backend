@@ -6,7 +6,7 @@
 
 import request from 'supertest';
 import express, { Express } from 'express';
-import { QueueManager, JobType } from '../queue';
+import { QueueManager, JobType, JobPayload, AddJobOptions } from '../queue';
 
 describe('Jobs API', () => {
   let app: Express;
@@ -27,18 +27,23 @@ describe('Jobs API', () => {
     // Setup routes
     app.post('/api/v1/jobs', async (req, res) => {
       try {
-        const { type, payload, options } = req.body;
+        const { type, payload, options } = req.body as {
+          type?: string;
+          payload?: unknown;
+          options?: AddJobOptions;
+        };
 
         if (!type || !payload) {
           return res.status(400).json({ error: 'Job type and payload are required' });
         }
 
-        if (!Object.values(JobType).includes(type)) {
+        if (!Object.values(JobType).includes(type as JobType)) {
           return res.status(400).json({ error: `Invalid job type: ${type}` });
         }
 
-        const jobId = await queueManager.addJob(type, payload, options);
-        res.status(201).json({ jobId, type, status: 'queued' });
+        const { jobId, deduplicated } = await queueManager.addJob(type as JobType, payload as JobPayload, options);
+        const httpStatus = deduplicated ? 200 : 201;
+        res.status(httpStatus).json({ jobId, type, status: 'queued', deduplicated });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         res.status(500).json({ error: `Failed to enqueue job: ${message}` });
@@ -165,6 +170,66 @@ describe('Jobs API', () => {
         });
 
       expect(response.status).toBe(201);
+    });
+
+    it('should return 201 and deduplicated=false for first enqueue with dedupeKey', async () => {
+      const response = await request(app)
+        .post('/api/v1/jobs')
+        .send({
+          type: JobType.EMAIL_NOTIFICATION,
+          payload: { to: 'dedup@example.com', subject: 'Dedup', body: 'First' },
+          options: { dedupeKey: 'api-dedup-001', delay: 5000 },
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.deduplicated).toBe(false);
+      expect(response.body.jobId).toBe('api-dedup-001');
+    });
+
+    it('should return 200 and deduplicated=true for duplicate dedupeKey', async () => {
+      const opts = { dedupeKey: 'api-dedup-002', delay: 5000 };
+      const payload = { to: 'dedup2@example.com', subject: 'Dedup2', body: 'body' };
+
+      await request(app)
+        .post('/api/v1/jobs')
+        .send({ type: JobType.EMAIL_NOTIFICATION, payload, options: opts });
+
+      const second = await request(app)
+        .post('/api/v1/jobs')
+        .send({ type: JobType.EMAIL_NOTIFICATION, payload, options: opts });
+
+      expect(second.status).toBe(200);
+      expect(second.body.deduplicated).toBe(true);
+      expect(second.body.jobId).toBe('api-dedup-002');
+    });
+
+    it('should treat jobs with different dedupeKeys as independent', async () => {
+      const payload = { to: 'x@example.com', subject: 'X', body: 'x' };
+
+      const r1 = await request(app)
+        .post('/api/v1/jobs')
+        .send({ type: JobType.EMAIL_NOTIFICATION, payload, options: { dedupeKey: 'key-A', delay: 5000 } });
+
+      const r2 = await request(app)
+        .post('/api/v1/jobs')
+        .send({ type: JobType.EMAIL_NOTIFICATION, payload, options: { dedupeKey: 'key-B', delay: 5000 } });
+
+      expect(r1.status).toBe(201);
+      expect(r2.status).toBe(201);
+      expect(r1.body.jobId).toBe('key-A');
+      expect(r2.body.jobId).toBe('key-B');
+    });
+
+    it('should enqueue without dedupeKey and return deduplicated=false', async () => {
+      const response = await request(app)
+        .post('/api/v1/jobs')
+        .send({
+          type: JobType.EMAIL_NOTIFICATION,
+          payload: { to: 'no-dedup@example.com', subject: 'No dedup', body: 'body' },
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.deduplicated).toBe(false);
     });
   });
 

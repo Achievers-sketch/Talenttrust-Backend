@@ -22,8 +22,13 @@ describe('Deployment Validator', () => {
     stellarNetwork: 'testnet',
     maxRequestSize: '10mb',
     corsOrigins: ['http://localhost:3000'],
+    NODE_ENV: 'development',
+    PORT: 3001,
+    STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
+    STELLAR_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
+    SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
     ...overrides,
-  });
+  } as EnvironmentConfig);
 
   describe('validateDeploymentConfig', () => {
     it('should validate a correct development configuration', () => {

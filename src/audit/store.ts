@@ -16,6 +16,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport } from './types';
+import type { AuditLogRepository } from './repository';
 
 /** Sentinel hash used as the previousHash of the very first entry. */
 export const GENESIS_HASH = 'GENESIS';
@@ -54,7 +55,7 @@ export function computeEntryHash(
  * const report = store.verifyIntegrity();
  * ```
  */
-export class AuditStore {
+export class AuditStore implements AuditLogRepository {
   /** Internal append-only log. Never mutate directly. */
   private readonly log: AuditEntry[] = [];
 
@@ -122,10 +123,9 @@ export class AuditStore {
    * @returns Matching entries in insertion order.
    */
   query(query: AuditQuery = {}): AuditEntry[] {
-    const limit = Math.min(query.limit ?? 100, 1000);
     const offset = Math.max(query.offset ?? 0, 0);
 
-    let results = this.log.filter((entry) => {
+    const results = this.log.filter((entry) => {
       if (query.action && entry.action !== query.action) return false;
       if (query.severity && entry.severity !== query.severity) return false;
       if (query.actor && entry.actor !== query.actor) return false;
@@ -136,7 +136,19 @@ export class AuditStore {
       return true;
     });
 
+    if (query.limit === undefined) {
+      return results.slice(offset);
+    }
+
+    const limit = Math.max(query.limit, 0);
     return results.slice(offset, offset + limit);
+  }
+
+  *stream(query: AuditQuery = {}): IterableIterator<AuditEntry> {
+    const rows = this.query(query);
+    for (const row of rows) {
+      yield row;
+    }
   }
 
   /**

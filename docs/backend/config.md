@@ -30,67 +30,28 @@ npm run dev             # config is validated on startup
 
 ```
 src/config/
-├── env.ts            # Low-level env parsing & validation utilities
-├── index.ts          # Config interface, loader, and singleton export
-└── config.test.ts    # Unit tests
+├── env.schema.ts     # Zod schema for environment variables
+├── environment.ts    # Main configuration loader and interface
+├── secrets.ts        # Secrets manager and EnvSecret implementation
+└── environment.test.ts # Configuration tests
 ```
 
-### Validation Rules
+### Validation Rules (powered by Zod)
 
-- **Empty strings** are treated as missing. A variable set to `""` or `"   "`
-  behaves as if it were unset.
-- **Numeric variables** (e.g. `PORT`) must parse to a finite integer.
-  Non-numeric or floating-point values cause a startup error.
-- **Boolean variables** accept `"true"`, `"1"`, `"false"`, or `"0"`
-  (case-insensitive). Any other value causes a startup error.
-- **Required variables** (when added in the future) throw a descriptive error
-  at boot time if missing. Currently all variables have safe defaults.
-
-### Usage in Application Code
-
-Import the singleton `config` object anywhere in the application:
-
-```ts
-import { config } from './config';
-
-console.log(config.server.port);           // number
-console.log(config.stellar.horizonUrl);    // string
-console.log(config.server.isProduction);   // boolean
-```
-
-The config object is deeply frozen (`Object.freeze`) and should not be
-mutated at runtime.
-
-### Usage in Tests
-
-Use the `loadConfig()` factory function to create isolated config snapshots
-with controlled environment variables:
-
-```ts
-import { loadConfig } from './config';
-
-beforeEach(() => {
-  delete process.env.PORT;
-});
-
-it('uses default port', () => {
-  const cfg = loadConfig();
-  expect(cfg.server.port).toBe(3001);
-});
-```
+- **Numeric variables** (e.g. `PORT`) are automatically parsed and validated as integers.
+- **Enums** (e.g. `NODE_ENV`) are strictly validated against allowed values.
+- **URLs** (e.g. `STELLAR_HORIZON_URL`) must be valid URL formats.
+- **Transformation**: Comma-separated strings (e.g. `CORS_ORIGINS`) are automatically converted to arrays.
+- **Fail-Fast**: If validation fails, the application prints a safe error (no secret values leaked) and exits with code `1`.
 
 ### Adding a New Variable
 
 1. Add the variable to `.env.example` with a comment.
-2. Add a field to the appropriate interface in `src/config/index.ts`
-   (`ServerConfig`, `StellarConfig`, `SorobanConfig`, or create a new one).
-3. Parse it in `loadConfig()` using the helpers from `src/config/env.ts`:
-   - `requireEnv(key)` — required string
-   - `optionalEnv(key, default)` — optional string with default
-   - `parseIntEnv(key, default)` — optional integer with default
-   - `parseBoolEnv(key, default)` — optional boolean with default
-4. Add tests in `src/config/config.test.ts`.
-5. Update the table in this document and in `README.md`.
+2. Add the field to the `envSchema` in `src/config/env.schema.ts`.
+3. If it needs to be mapped to the `EnvironmentConfig` interface, update `src/config/environment.ts`.
+4. Add tests in `src/config/environment.test.ts`.
+5. Update this document and `README.md`.
+
 
 ## Security Notes
 

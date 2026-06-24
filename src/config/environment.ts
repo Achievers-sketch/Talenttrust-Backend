@@ -7,10 +7,12 @@
  * @module config/environment
  */
 
-export type Environment = 'development' | 'staging' | 'production';
+import { validateEnv, EnvConfig } from './env.schema';
 
-export interface EnvironmentConfig {
-  /** Current environment name */
+export type Environment = 'development' | 'staging' | 'production' | 'test';
+
+export interface EnvironmentConfig extends EnvConfig {
+  /** Current environment name (mapped from NODE_ENV for compatibility) */
   environment: Environment;
   /** Server port */
   port: number;
@@ -31,16 +33,12 @@ export interface EnvironmentConfig {
 }
 
 /**
- * Validates required environment variables
- * @throws {Error} If required environment variables are missing
+ * Validates required environment variables using Zod schema.
+ * This is now a wrapper around validateEnv.
+ * @throws {Error} If required environment variables are missing or invalid
  */
-function validateEnvironment(): void {
-  const required = ['NODE_ENV'];
-  const missing = required.filter(key => !process.env[key]);
-  
-  if (missing.length > 0) {
-    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
-  }
+export function validateEnvironment(): void {
+  validateEnv(process.env);
 }
 
 /**
@@ -50,7 +48,7 @@ function validateEnvironment(): void {
 export function getCurrentEnvironment(): Environment {
   const env = process.env.NODE_ENV || 'development';
   
-  if (env === 'production' || env === 'staging' || env === 'development') {
+  if (env === 'production' || env === 'staging' || env === 'development' || env === 'test') {
     return env as Environment;
   }
   
@@ -58,25 +56,26 @@ export function getCurrentEnvironment(): Environment {
 }
 
 /**
- * Loads environment-specific configuration
+ * Loads environment-specific configuration and validates it against the schema.
  * @returns {EnvironmentConfig} Configuration object for current environment
  */
 export function loadEnvironmentConfig(): EnvironmentConfig {
-  validateEnvironment();
+  const validated = validateEnv(process.env);
   
-  const environment = getCurrentEnvironment();
-  const port = parseInt(process.env.PORT || '3001', 10);
+  const environment = validated.NODE_ENV as Environment;
+  const port = validated.PORT;
   
   const baseConfig: EnvironmentConfig = {
+    ...validated,
     environment,
     port,
-    nodeEnv: process.env.NODE_ENV || 'development',
-    apiBaseUrl: process.env.API_BASE_URL || `http://localhost:${port}`,
-    debug: process.env.DEBUG === 'true',
-    databaseUrl: process.env.DATABASE_URL,
+    nodeEnv: validated.NODE_ENV,
+    apiBaseUrl: validated.API_BASE_URL || `http://localhost:${port}`,
+    debug: validated.DEBUG ?? false,
+    databaseUrl: validated.DATABASE_URL,
     stellarNetwork: environment === 'production' ? 'mainnet' : 'testnet',
-    maxRequestSize: process.env.MAX_REQUEST_SIZE || '10mb',
-    corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'],
+    maxRequestSize: validated.MAX_REQUEST_SIZE,
+    corsOrigins: validated.CORS_ORIGINS ?? ['http://localhost:3000'],
   };
   
   return baseConfig;
@@ -105,3 +104,4 @@ export function isStaging(): boolean {
 export function isDevelopment(): boolean {
   return getCurrentEnvironment() === 'development';
 }
+

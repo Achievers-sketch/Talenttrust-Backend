@@ -8,44 +8,97 @@
  * @security
  *  - express.json() body parser is scoped to this app instance only.
  *  - All routes return JSON; no HTML rendering surface.
- *  - Helmet-style headers should be added here when the dependency is
- *    introduced (tracked in docs/backend/security.md).
+ *  - CORS and Helmet security headers are applied via applySecurityMiddleware.
  */
 
-import express, { Request, Response, NextFunction } from 'express';
-import { healthRouter } from './routes/health';
+import express from 'express';
+import { applySecurityMiddleware } from './middleware/security';
+import { MetricsService } from './observability/metrics-service';
+import { rateLimitStore } from './config/rateLimit';
+import { notFoundHandler, errorHandler } from './middleware/errorHandlers';
+import { healthRouter as legacyHealthRouter } from './routes/health';
+import { healthRouter as readinessHealthRouter } from './health';
+import { validateEnv } from './config/env.schema';
+import { createRequestLimitsMiddleware } from './middleware/requestLimits';
+
 import contractsModuleRouter from './routes/contracts.routes';
+import eventsRouter from './routes/events.routes';
+
 import reputationRouter from './routes/reputation.routes';
+import configRouter from './routes/config.routes';
+import dependencyScanRouter from './routes/dependency-scan.routes';
+import { adminRouter } from './routes/admin.routes';
+import { deployRouter } from './routes/deploy.routes';
+import eventsRouter from './routes/events.routes';
 import { requestIdMiddleware } from './middleware/requestId';
+import { httpLoggerMiddleware } from './middleware/httpLogger';
+import { ReputationService } from './services/reputation.service';
+import { getDb } from './db/database';
+import { eventIngestionService } from './events/registry';
+
+interface AppFactoryOptions {
+  includeTerminalHandlers?: boolean;
+}
+
+export function attachTerminalHandlers(app: express.Application): void {
+  // ── 404 handler ──────────────────────────────────────────────────────────
+  app.use(notFoundHandler);
+
+  // ── Global error handler ─────────────────────────────────────────────────
+  app.use(errorHandler);
+}
 
 /**
  * Creates and configures the Express application.
  *
  * @returns Configured Express app instance (not yet listening).
  */
-export function createApp(): express.Application {
+export function createApp(options?: AppFactoryOptions): express.Application {
+  const includeTerminalHandlers = options?.includeTerminalHandlers ?? true;
+  validateEnv();
   const app = express();
 
+  // ── Security Middleware ───────────────────────────────────────────────────
+  applySecurityMiddleware(app);
+
+  const metricsService = new MetricsService(
+    process.env['SERVICE_NAME'] ?? 'talenttrust-backend',
+  );
+
   // ── Middleware ────────────────────────────────────────────────────────────
-  app.use(express.json());
   app.use(requestIdMiddleware);
+  app.use(createRequestLimitsMiddleware());
+  app.use(express.json());
+  app.use(httpLoggerMiddleware);
+  app.use(metricsService.trackHttpRequest.bind(metricsService));
+
+  // ── Initialize Services ───────────────────────────────────────────────────
+  // Initialize reputation service with database connection
+  const db = getDb();
+  ReputationService.initialize(db);
 
   // ── Routes ────────────────────────────────────────────────────────────────
-  app.use('/health', healthRouter);
+  app.use('/health', legacyHealthRouter);
+  app.use('/health', readinessHealthRouter);
+  app.use('/api/config', configRouter);
+  app.use('/api/v1', eventsRouter);
   app.use('/api/v1/contracts', contractsModuleRouter);
   app.use('/api/v1/reputation', reputationRouter);
+  app.use('/api/v1/dependency-scan', dependencyScanRouter);
+  app.use('/api/v1/admin', adminRouter);
+  app.use('/api/v1/admin/deploy', deployRouter);
 
-  // ── 404 handler ──────────────────────────────────────────────────────────
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: 'Not Found' });
-  });
-
-  // ── Global error handler ─────────────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Internal Server Error' });
-  });
+  if (includeTerminalHandlers) {
+    attachTerminalHandlers(app);
+  }
 
   return app;
+}
+
+/** Shutdown handler for graceful termination. */
+export function shutdownRateLimitStore(): void {
+  if (rateLimitStore && typeof (rateLimitStore as any).destroy === 'function') {
+    (rateLimitStore as any).destroy();
+    console.log('[rateLimit] Store shutdown complete');
+  }
 }

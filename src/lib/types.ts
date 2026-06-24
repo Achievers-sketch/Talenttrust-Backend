@@ -2,7 +2,7 @@ import type { Request } from "express";
 
 // ─── Role ─────────────────────────────────────────────────────────────────────
 
-export type Role = "admin" | "client" | "freelancer";
+export type Role = "admin" | "auditor" | "client" | "freelancer";
 
 // ─── Resource & Action ───────────────────────────────────────────────────────
 

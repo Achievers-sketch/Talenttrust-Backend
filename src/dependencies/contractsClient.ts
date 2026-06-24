@@ -1,67 +1,62 @@
 import { AppConfig } from '../appConfiguration';
 import { ChaosPolicy } from '../chaos/chaosPolicy';
+import { circuitBreakerRegistry } from '../circuit-breaker/registry';
+import { CircuitOpenError } from '../circuit-breaker/errors';
 import { Contract, ContractsPayload } from '../types/contracts';
+import { UpstreamHttpClient, DependencyError } from './upstreamHttpClient';
 
-export class DependencyError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'DependencyError';
-  }
-}
+export { DependencyError };
 
 /**
  * Fetches contracts from an upstream dependency and can inject outages for resilience testing.
+ * Wraps calls in a circuit breaker to prevent cascading failures.
  */
 export class ContractsClient {
+  private readonly client: UpstreamHttpClient;
+
   constructor(
-    private readonly config: Pick<AppConfig, 'upstreamContractsUrl' | 'upstreamTimeoutMs'>,
-    private readonly chaosPolicy: ChaosPolicy,
-  ) {}
+    private readonly config: Pick<AppConfig, 'upstreamContractsUrl' | 'upstreamTimeoutMs' | 'circuitBreaker'>,
+    chaosPolicy: ChaosPolicy,
+  ) {
+    this.client = new UpstreamHttpClient(
+      {
+        dependencyName: 'contracts',
+        baseUrl: this.config.upstreamContractsUrl,
+        timeoutMs: this.config.upstreamTimeoutMs,
+        retryOptions: { maxAttempts: 3, baseDelayMs: 200, maxDelayMs: 5000 },
+      },
+      chaosPolicy
+    );
 
-  async getContracts(): Promise<Contract[]> {
-    const chaosResult = this.chaosPolicy.decide('contracts');
-    if (chaosResult === 'error') {
-      throw new DependencyError('Injected dependency failure');
-    }
-
-    if (chaosResult === 'timeout') {
-      throw new DependencyError('Injected dependency timeout');
-    }
-
-    return this.fetchContracts();
+    circuitBreakerRegistry.getOrCreate('contracts', {
+      failureThreshold: this.config.circuitBreaker.failureThreshold,
+      successThreshold: this.config.circuitBreaker.successThreshold,
+      timeout: this.config.circuitBreaker.timeoutMs,
+    });
   }
 
-  private async fetchContracts(): Promise<Contract[]> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.upstreamTimeoutMs);
-
+  async getContracts(): Promise<Contract[]> {
+    const breaker = circuitBreakerRegistry.getOrCreate('contracts');
     try {
-      const response = await fetch(this.config.upstreamContractsUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          Accept: 'application/json',
-        },
+      return await breaker.execute(async () => {
+        const payload = await this.client.get<ContractsPayload>('', {
+          headers: { Accept: 'application/json' }
+        });
+
+        if (!payload || !Array.isArray(payload.contracts)) {
+          throw new DependencyError('Upstream payload validation failed');
+        }
+
+        return payload.contracts;
       });
-
-      if (!response.ok) {
-        throw new DependencyError('Upstream returned non-success response');
-      }
-
-      const payload = (await response.json()) as ContractsPayload;
-      if (!Array.isArray(payload?.contracts)) {
-        throw new DependencyError('Upstream payload validation failed');
-      }
-
-      return payload.contracts;
     } catch (error) {
+      if (error instanceof CircuitOpenError) {
+        throw new DependencyError(`Circuit breaker open: ${error.message}`);
+      }
       if (error instanceof DependencyError) {
         throw error;
       }
-
       throw new DependencyError('Upstream dependency unavailable');
-    } finally {
-      clearTimeout(timeout);
     }
   }
 }

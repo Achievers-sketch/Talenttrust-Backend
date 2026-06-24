@@ -4,6 +4,7 @@ export interface WebhookPayload {
   event: string;
   data: any;
   retryCount: number;
+  webhookSecret?: string;
 }
 
 export interface DLQEntry extends WebhookPayload {

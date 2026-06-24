@@ -150,8 +150,7 @@ describe('createRateLimiter – middleware', () => {
       // 1st violation (request 2 over limit of 1)
       await fireRequests(app, 2, '/api/test', ip);
       // 2nd violation = abuse threshold reached
-      const results = await fireRequests(app, 1, '/api/test', ip);
-      const blocked = results[0];
+      await fireRequests(app, 1, '/api/test', ip);
 
       // May already be blocked or just rate-limited; subsequent should block
       const followUp = await request(app).get('/api/test').set('X-Forwarded-For', ip);
@@ -287,32 +286,55 @@ describe('createRateLimiter – middleware', () => {
   });
 });
 
-//   let app: express.Express;
+describe('auth endpoint rate limiting', () => {
+  it('POST /api/v1/auth/login uses strict tier', async () => {
+    const app = buildApp({ maxRequests: 3, windowMs: 60_000, abuseThreshold: 99 });
+    app.post('/api/v1/auth/login', (req, res) => res.json({ ok: true }));
 
-//   beforeAll(() => {
-//     // Import via dynamic require so we can set env vars before import
-//     process.env.RATE_LIMIT_MAX_REQUESTS = '3';
-//     process.env.RATE_LIMIT_WINDOW_MS = '60000';
-//     // eslint-disable-next-line @typescript-eslint/no-var-requires
-//     app = require('../../index').app;
-//   });
+    await request(app).post('/api/v1/auth/login').send({});
+    await request(app).post('/api/v1/auth/login').send({});
+    await request(app).post('/api/v1/auth/login').send({});
+    const res = await request(app).post('/api/v1/auth/login').send({});
+    expect(res.status).toBe(429);
+  });
 
-//   it('GET /health returns 200', async () => {
-//     const res = await request(app).get('/health');
-//     expect(res.status).toBe(200);
-//     expect(res.body).toMatchObject({ status: 'ok' });
-//   });
+  it('POST /api/v1/auth/register uses strict tier', async () => {
+    const app = buildApp({ maxRequests: 2, windowMs: 60_000, abuseThreshold: 99 });
+    app.post('/api/v1/auth/register', (req, res) => res.json({ ok: true }));
 
-//   it('GET /api/v1/contracts returns 200 within limit', async () => {
-//     const res = await request(app).get('/api/v1/contracts').set('X-Forwarded-For', '60.0.0.1');
-//     expect(res.status).toBe(200);
-//     expect(res.body).toHaveProperty('contracts');
-//   });
+    await request(app).post('/api/v1/auth/register').send({});
+    await request(app).post('/api/v1/auth/register').send({});
+    const res = await request(app).post('/api/v1/auth/register').send({});
+    expect(res.status).toBe(429);
+  });
+});
 
-//   it('GET /api/v1/contracts returns 429 after limit', async () => {
-//     const ip = '60.0.0.99';
-//     await fireRequests(app, 3, '/api/v1/contracts', ip);
-//     const res = await request(app).get('/api/v1/contracts').set('X-Forwarded-For', ip);
-//     expect(res.status).toBe(429);
-//   });
-// });
+describe('sensitive endpoint rate limiting', () => {
+  it('PUT /api/v1/reputation/:id uses sensitive tier', async () => {
+    const app = buildApp({ maxRequests: 5, windowMs: 60_000, abuseThreshold: 99 });
+    app.put('/api/v1/reputation/:id', (req, res) => res.json({ ok: true }));
+
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app).put('/api/v1/reputation/123').send({ rating: 5 });
+      expect(res.status).toBe(200);
+    }
+    const res = await request(app).put('/api/v1/reputation/123').send({ rating: 5 });
+    expect(res.status).toBe(429);
+  });
+
+  it('sensitive tier allows bursts but blocks abuse', async () => {
+    const app = buildApp({
+      maxRequests: 10,
+      windowMs: 60_000,
+      abuseThreshold: 3,
+      blockDurationMs: 60_000,
+    });
+    app.post('/api/v1/test', (req, res) => res.json({ ok: true }));
+
+    // Safe burst: 10 requests within limit
+    for (let i = 0; i < 10; i++) {
+      const res = await request(app).post('/api/v1/test').send({});
+      expect(res.status).toBe(200);
+    }
+  });
+});

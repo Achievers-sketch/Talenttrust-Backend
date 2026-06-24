@@ -1,4 +1,4 @@
-import { withRetry, calculateDelay, sleep } from './retry';
+import { withRetry, calculateDelay } from './retry';
 
 describe('calculateDelay', () => {
   it('returns exponential backoff', () => {

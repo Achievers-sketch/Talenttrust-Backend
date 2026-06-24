@@ -1,7 +1,6 @@
 /**
  * Environment Configuration Tests
- * 
- * Comprehensive test suite for environment configuration module
+ * * Comprehensive test suite for environment configuration module
  * covering all environments, edge cases, and error scenarios.
  */
 
@@ -11,8 +10,8 @@ import {
   isProduction,
   isStaging,
   isDevelopment,
-  Environment,
 } from './environment';
+import { validateEnv } from './env.schema';
 
 describe('Environment Configuration', () => {
   const originalEnv = process.env;
@@ -131,7 +130,8 @@ describe('Environment Configuration', () => {
 
     it('should throw error when NODE_ENV is missing', () => {
       delete process.env.NODE_ENV;
-      expect(() => loadEnvironmentConfig()).toThrow('Missing required environment variables: NODE_ENV');
+      const config = loadEnvironmentConfig();
+      expect(config.environment).toBe('development');
     });
   });
 
@@ -167,20 +167,18 @@ describe('Environment Configuration', () => {
       expect(config.port).toBe(3001);
     });
 
-    it('should handle non-numeric PORT gracefully', () => {
+    it('should throw for non-numeric PORT', () => {
       process.env.NODE_ENV = 'development';
       process.env.PORT = 'invalid';
-      const config = loadEnvironmentConfig();
-
-      expect(config.port).toBeNaN();
+      expect(() => loadEnvironmentConfig()).toThrow();
     });
 
-    it('should handle empty CORS_ORIGINS', () => {
+    it('should handle empty CORS_ORIGINS using default', () => {
       process.env.NODE_ENV = 'development';
       process.env.CORS_ORIGINS = '';
       const config = loadEnvironmentConfig();
 
-      expect(config.corsOrigins).toEqual(['']);
+      expect(config.corsOrigins).toEqual(['http://localhost:3000']);
     });
 
     it('should handle DEBUG=false', () => {
@@ -189,6 +187,96 @@ describe('Environment Configuration', () => {
       const config = loadEnvironmentConfig();
 
       expect(config.debug).toBe(false);
+    });
+  });
+
+  describe('validateEnv edge cases', () => {
+    let consoleErrorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      // Suppress console.error during validation failures to avoid noisy test output
+      consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      process.env.NODE_ENV = 'test';
+    });
+
+    afterEach(() => {
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should reject internal URLs for SSRF-guarded variables', () => {
+      const ssrfVars = ['API_BASE_URL', 'STELLAR_HORIZON_URL', 'SOROBAN_RPC_URL', 'STELLAR_RPC_URL'];
+      
+      for (const envVar of ssrfVars) {
+        process.env[envVar] = 'http://localhost:8080';
+        expect(() => validateEnv(process.env)).toThrow(/SSRF protection|must be a public URL/);
+        
+        process.env[envVar] = 'http://10.0.0.1';
+        expect(() => validateEnv(process.env)).toThrow(/SSRF protection|must be a public URL/);
+        
+        delete process.env[envVar]; // cleanup after check
+      }
+    });
+
+    it('should accept valid public URLs for SSRF-guarded variables', () => {
+      process.env.API_BASE_URL = 'https://api.example.com';
+      process.env.STELLAR_HORIZON_URL = 'https://horizon.stellar.org';
+      process.env.SOROBAN_RPC_URL = 'https://rpc.soroban.com';
+      process.env.STELLAR_RPC_URL = 'https://rpc.stellar.org';
+      
+      const config = validateEnv(process.env);
+      expect(config.API_BASE_URL).toBe('https://api.example.com');
+      expect(config.STELLAR_HORIZON_URL).toBe('https://horizon.stellar.org');
+      expect(config.SOROBAN_RPC_URL).toBe('https://rpc.soroban.com');
+      expect(config.STELLAR_RPC_URL).toBe('https://rpc.stellar.org');
+    });
+
+    it('should validate PORT coercion bounds', () => {
+      process.env.PORT = '0';
+      expect(() => validateEnv(process.env)).toThrow(/Number must be greater than or equal to 1/);
+      
+      process.env.PORT = '65536';
+      expect(() => validateEnv(process.env)).toThrow(/Number must be less than or equal to 65535/);
+      
+      process.env.PORT = 'invalid';
+      expect(() => validateEnv(process.env)).toThrow(/Expected number, received nan/i);
+    });
+
+    it('should validate NODE_ENV enum', () => {
+      process.env.NODE_ENV = 'invalid_env';
+      expect(() => validateEnv(process.env)).toThrow(/Invalid enum value/);
+    });
+
+    it('should parse valid ROUTE_BODY_LIMITS correctly', () => {
+      process.env.ROUTE_BODY_LIMITS = '/api/upload:1048576,/api/data:2048';
+      const config = validateEnv(process.env);
+      expect(config.ROUTE_BODY_LIMITS).toEqual({
+        '/api/upload': 1048576,
+        '/api/data': 2048
+      });
+    });
+
+    it('should reject malformed ROUTE_BODY_LIMITS', () => {
+      // Missing path prefix '/'
+      process.env.ROUTE_BODY_LIMITS = 'api/upload:1024';
+      expect(() => validateEnv(process.env)).toThrow(/ROUTE_BODY_LIMITS must be a comma-separated list of path:limit pairs/);
+      
+      // Negative limit
+      process.env.ROUTE_BODY_LIMITS = '/api/upload:-1024';
+      expect(() => validateEnv(process.env)).toThrow(/ROUTE_BODY_LIMITS must be a comma-separated list of path:limit pairs/);
+
+      // Not an integer
+      process.env.ROUTE_BODY_LIMITS = '/api/upload:10.5';
+      expect(() => validateEnv(process.env)).toThrow(/ROUTE_BODY_LIMITS must be a comma-separated list of path:limit pairs/);
+
+      // Missing colon
+      process.env.ROUTE_BODY_LIMITS = '/api/upload=1024';
+      expect(() => validateEnv(process.env)).toThrow(/ROUTE_BODY_LIMITS must be a comma-separated list of path:limit pairs/);
+    });
+
+    it('should throw under NODE_ENV=test and not exit process', () => {
+      process.env.PORT = 'invalid';
+      // validateEnv is expected to throw rather than exit() due to the `isTest` branch
+      expect(() => validateEnv(process.env)).toThrow();
     });
   });
 });

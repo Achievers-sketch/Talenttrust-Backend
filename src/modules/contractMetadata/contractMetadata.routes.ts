@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { contractMetadataController } from './contractMetadata.controller';
 import { authMiddleware, requireContractAccess } from '../../middleware/auth';
-import { 
-  validateRequest, 
-  validateParams, 
-  validateQuery 
+import {
+  validateRequest,
+  validateParams,
+  validateQuery
 } from '../../middleware/validation';
 import {
   createContractMetadataSchema,
@@ -13,8 +13,11 @@ import {
   metadataIdParamsSchema,
   paginationQuerySchema
 } from './contractMetadata.schema';
+import { createRateLimiter } from '../../middleware/rateLimiter';
+import { rateLimitConfig } from '../../config/rateLimit';
 
 const router = Router();
+const sensitiveLimiter = createRateLimiter(rateLimitConfig.sensitive);
 
 /**
  * Contract Metadata Routes
@@ -24,6 +27,7 @@ const router = Router();
 // POST /contracts/:contractId/metadata - Create metadata
 router.post(
   '/contracts/:contractId/metadata',
+  sensitiveLimiter,
   authMiddleware,
   requireContractAccess,
   validateParams(contractIdParamsSchema),
@@ -53,6 +57,7 @@ router.get(
 // PATCH /contracts/:contractId/metadata/:id - Update metadata
 router.patch(
   '/contracts/:contractId/metadata/:id',
+  sensitiveLimiter,
   authMiddleware,
   requireContractAccess,
   validateParams(metadataIdParamsSchema),
@@ -63,6 +68,7 @@ router.patch(
 // DELETE /contracts/:contractId/metadata/:id - Delete metadata
 router.delete(
   '/contracts/:contractId/metadata/:id',
+  sensitiveLimiter,
   authMiddleware,
   requireContractAccess,
   validateParams(metadataIdParamsSchema),

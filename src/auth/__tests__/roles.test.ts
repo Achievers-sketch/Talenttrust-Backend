@@ -7,7 +7,7 @@
  *   - No duplicate actions per resource.
  */
 
-import { ACCESS_CONTROL_MATRIX, VALID_ROLES, Role, Resource, Action } from '../roles';
+import { ACCESS_CONTROL_MATRIX, VALID_ROLES, Resource, Action } from '../roles';
 
 const ALL_RESOURCES: Resource[] = ['contracts', 'users', 'reputation', 'disputes', 'health'];
 const ALL_ACTIONS: Action[] = ['create', 'read', 'update', 'delete'];
@@ -33,9 +33,9 @@ describe('Access Control Matrix – structural integrity', () => {
   it('should not have duplicate actions for any role-resource pair', () => {
     for (const role of VALID_ROLES) {
       const resources = ACCESS_CONTROL_MATRIX[role];
-      for (const [resource, actions] of Object.entries(resources)) {
+      for (const actions of Object.values(resources)) {
         const unique = new Set(actions as Action[]);
-        expect(unique.size).toBe((actions as Action[]).length);
+        expect(unique.size).toBe(actions.length);
       }
     }
   });

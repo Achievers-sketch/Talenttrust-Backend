@@ -132,7 +132,7 @@ describe('RetentionPolicyEngine', () => {
         isActive: true,
       });
 
-      const inactive = engine.createPolicy({
+      engine.createPolicy({
         name: 'Inactive Policy',
         description: 'Inactive',
         entityType: DataEntityType.DOCUMENT,

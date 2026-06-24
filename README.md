@@ -10,6 +10,10 @@ Handles contract metadata, reputation, and integration with Stellar/Soroban.
 - **Email Notifications**: Non-blocking email delivery
 - **Reputation System**: Background reputation score calculations
 - **Blockchain Sync**: Efficient blockchain data synchronization
+- **Idempotent Event Processing**: Guaranteed safe event replay with deduplication
+- **Strict Schema Validation**: Contract-specific payload validation
+- **Audit Trail**: Complete processing history and statistics
+- **Stale-While-Revalidate Caching**: SWR caching for upstream resources with degraded signals
 
 ## Dependency Chaos Testing
 
@@ -33,6 +37,8 @@ The backend includes dependency-level chaos testing to simulate upstream outages
 ### Docs
 
 Detailed architecture and security notes are in `docs/backend/chaos-testing.md`.
+
+Developer onboarding and blue-green local setup are documented in [docs/backend/developer-onboarding-blue-green.md](docs/backend/developer-onboarding-blue-green.md).
 
 ## Error Handling and Testing
 
@@ -61,14 +67,6 @@ All handled errors return:
 
 Detailed notes are in `docs/backend/error-handling.md`.
 
-## Features
-
-- **Smart Contract Integration**: Handles contract metadata and lifecycle management
-- **Reputation System**: Tracks and manages freelancer reputation
-- **Data Retention Controls**: Configurable compliance-ready data retention and archival
-- **Audit Logging**: Complete audit trail for compliance verification
-- **GDPR/CCPA Ready**: Built-in support for major compliance frameworks
-
 ## Contract Event Processing
 
 The backend now includes a deterministic contract event processing pipeline focused on three semantics:
@@ -77,14 +75,14 @@ The backend now includes a deterministic contract event processing pipeline focu
 2. Deduplication: compute a stable event identity key (`contractId:eventId:sequence`) and treat replays as idempotent duplicates.
 3. Persistence: store accepted events through a repository abstraction (current implementation: in-memory).
 
-### Endpoints
+### Event Ingestion Endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/health` | Service health |
-| `POST` | `/api/v1/contracts/events` | Ingest contract event payload |
-| `GET` | `/api/v1/contracts/events` | List persisted events |
-| `GET` | `/api/v1/contracts` | List unique contract ids from persisted events |
+| `POST` | `/api/v1/events` | Process events with idempotency guarantees |
+| `POST` | `/api/v1/events/validate` | Validate events without processing |
+| `GET` | `/api/v1/events/stats` | Processing statistics |
+| `GET` | `/api/v1/contracts/{contractId}/history` | Contract event history |
 
 ### Ingestion outcomes
 
@@ -119,8 +117,32 @@ npm install
 | `npm run lint:fix` | Auto-fix lint issues |
 | `npm run audit:ci` | Fail on HIGH/CRITICAL npm vulnerabilities |
 
+## Configuration
+
+Copy environment template:
+```bash
+cp .env.example .env
+```
+
+Key event ingestion configuration:
+```bash
+# Event Ingestion Configuration
+ENABLE_STRICT_VALIDATION=true
+ENABLE_PAYLOAD_INTEGRITY_CHECK=true
+MAX_EVENT_AGE_MS=86400000
+EVENT_BATCH_SIZE=100
+EVENT_TIMEOUT_MS=5000
+```
+
+For full configuration details, see [docs/backend/config.md](docs/backend/config.md).
+
 ## Documentation
+
 - [Backend Notification Services](./docs/backend/notifications.md)
+- [Event Ingestion Idempotency](docs/EVENT_INGESTION_IDEMPOTENCY.md)
+- [SLA/SLO Definitions and Alert Thresholds](docs/backend/SLA_SLO.md)
+- [Redis Testing Guide](docs/backend/redis-testing-guide.md)
+- [Escrow Contract Lifecycle & Bounds](docs/contracts-lifecycle.md)
 
 ## CI/CD
 
@@ -134,6 +156,10 @@ GitHub Actions runs four gates on every push and pull request to `main`:
 All four checks must pass before a PR can be merged. See
 [docs/backend/branch-protection.md](docs/backend/branch-protection.md) for
 the recommended GitHub branch protection settings.
+
+## License
+
+MIT License - see LICENSE file for details.
 
 ## Project Structure
 
@@ -168,6 +194,44 @@ The test suite includes both unit and integration coverage:
 
 Coverage thresholds are enforced in Jest at 95% for statements, branches, functions, and lines (for included modules).
 
+## Queue Processor Logging Convention
+
+All queue processors (`src/queue/processors/`) use the structured logger from `src/logger.ts` — **never** `console.log` / `console.warn` / `console.error`.
+
+### Rules
+
+| Concern | Rule |
+|---|---|
+| Logger instantiation | Each processor calls `createLogger({ processor: '<name>', ...correlationCtx })` at the top of its handler, binding `correlationId` and `requestId` from the job payload. |
+| Log record shape | Every record carries `timestamp`, `level`, `message`, and `service: "talenttrust-backend"`. |
+| PII at info/warn level | Recipient email addresses, `userId`, and `contractId` must **not** appear in `message` strings at `info` or `warn` level. They may be logged at `debug` level as structured fields. |
+| Error path | Validation errors emit a `warn` record (via `log.warn(...)`) **before** throwing, so observers can correlate the rejection with the job's correlation context. |
+| Job IDs | Email tracking IDs are generated with `generateEmailId()` (uses `crypto.randomUUID()`). Never use `Date.now() + Math.random()` for IDs. |
+
+### Example — adding a new processor
+
+```ts
+import { createLogger } from '../../logger';
+
+export async function processMyJob(payload: MyPayload): Promise<JobResult> {
+  const log = createLogger({
+    processor: 'my-processor',
+    ...(payload.correlationId && { correlationId: payload.correlationId }),
+    ...(payload.requestId    && { requestId:    payload.requestId }),
+  });
+
+  if (!isValid(payload)) {
+    log.warn('Validation failed: reason');   // structured, no PII
+    throw new Error('...');
+  }
+
+  log.info('Job started');
+  // ...
+  log.info('Job completed', { someMetric: 42 });
+  return { success: true };
+}
+```
+
 ## Security Notes
 
 1. Input validation is strict at ingestion boundaries to reject malformed payloads early.
@@ -176,18 +240,24 @@ Coverage thresholds are enforced in Jest at 95% for statements, branches, functi
 4. Current persistence is in-memory and intended for testability and local development; production hardening should add durable storage and capacity limits.
 5. Trust boundary remains the ingestion endpoint; event authenticity and signature verification are future integration concerns.
 
-## Environment Variables
-
-All configuration is managed through `src/config/` and validated at startup. Copy `.env.example` to `.env` to get started. See [docs/backend/config.md](docs/backend/config.md) for full details.
+All configuration is managed through `src/config/` and validated at startup using **Zod**. This ensures a fail-fast behavior with clear error messages. Copy `.env.example` to `.env` to get started. See [docs/backend/config.md](docs/backend/config.md) for full details.
 
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3001` | HTTP port for the Express server |
-| `NODE_ENV` | `development` | Runtime environment |
+| `NODE_ENV` | `development` | Runtime environment (`development`, `staging`, `production`, `test`) |
+| `API_BASE_URL` | `http://localhost:${PORT}` | Base URL for the API |
+| `DEBUG` | `false` | Enable/disable debug logging |
+| `DATABASE_URL` | *(optional)* | Database connection string |
+| `JWT_SECRET` | *(optional)* | Secret used for JWT signing (min 8 chars) |
 | `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` | Stellar Horizon API endpoint |
 | `STELLAR_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | Network passphrase for signing |
 | `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban JSON-RPC endpoint |
 | `SOROBAN_CONTRACT_ID` | *(empty)* | Deployed escrow contract ID |
+| `ACTIVE_COLOR` | `blue` | Active backend color for blue-green routing |
+| `BLUE_PORT` | `3001` | Port for the 'blue' backend |
+| `GREEN_PORT` | `3002` | Port for the 'green' backend |
+
 
 ## API Endpoints
 
@@ -308,7 +378,7 @@ The backend uses an embedded **SQLite** database (via `better-sqlite3`) — no e
 | -------------------- | ---------------- | ----------------------------------------------------------- |
 | `DB_PATH`            | `talenttrust.db` | Path to the SQLite file. Use `:memory:` for ephemeral mode. |
 
-Schema migrations run automatically on startup. See [`docs/backend/database.md`](docs/backend/database.md) for full documentation: schema, repository API, configuration, and security notes.
+Schema migrations run automatically on startup and record applied versions in `schema_version`. See [`docs/backend/database.md`](docs/backend/database.md) for full documentation: schema, versioning, rollback guidance, repository API, configuration, and security notes.
 
 ## Circuit Breaker
 
@@ -325,6 +395,42 @@ Upstream RPC calls (Stellar/Soroban) are protected by a built-in circuit breaker
 | `STELLAR_RPC_URL`    | `https://soroban-testnet.stellar.org` | Stellar JSON-RPC endpoint |
 
 Live state is available at `GET /api/v1/circuit-breaker/status`. See [`docs/backend/circuit-breaker.md`](docs/backend/circuit-breaker.md) for full reference.
+
+## Blockchain Sync
+
+The `blockchain-sync` background job ingests on-chain Soroban contract events
+into the local indexer. It scans a ledger range, fetches events from the
+Soroban RPC layer, and persists each event so downstream consumers (reputation,
+escrow flows) see the latest chain state.
+
+| Behaviour | Detail |
+| --------- | ------ |
+| **Real RPC ingestion** | Events are fetched via `SorobanRpcService.getEvents` (no more stubbed batches). |
+| **Idempotent persistence** | Each event is keyed by `contractId:eventId:ledger`; replayed or retried batches never double-write. |
+| **Circuit-breaker guarded** | Every RPC call runs through the shared breaker; an open circuit fast-fails the job. |
+| **Resumable** | Progress is checkpointed per batch via a cursor, so a restarted job resumes from the last synced ledger instead of re-scanning from zero. |
+| **Fail-and-retry** | RPC/timeout errors throw so the queue retries the job rather than silently reporting success. |
+| **SSRF-guarded** | `SOROBAN_RPC_URL` is validated against the SSRF allow-list before any egress. |
+
+Job payload (`BlockchainSyncPayload`):
+
+```jsonc
+{
+  "network": "soroban",   // or "stellar"
+  "startBlock": 1000,      // optional — resumes from the last cursor when omitted
+  "endBlock": 1100         // optional — defaults to the current chain head
+}
+```
+
+| Environment variable | Default | Description |
+| -------------------- | ------- | ----------- |
+| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban JSON-RPC endpoint (must be a public, SSRF-safe URL). |
+| `SOROBAN_CONTRACT_ID` | *(empty)* | When set, events are filtered to this contract. |
+
+When neither `startBlock` nor a stored cursor exists, the job starts from ledger
+`0`; when `endBlock` is omitted, the current chain head is discovered via
+`getLatestLedger`. If there is nothing new to sync, the job returns early
+without making event calls.
 
 ## New Features
 

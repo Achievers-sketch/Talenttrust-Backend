@@ -6,7 +6,11 @@
  * Add new probes here and register them in {@link runHealthCheck}.
  */
 
+import Redis from "ioredis";
+import { getDb } from "../db/database";
 import { ProbeResult } from "./types";
+
+const REDIS_PROBE_TIMEOUT_MS = 3_000;
 
 /**
  * Probe: verify required environment variables are present.
@@ -48,11 +52,12 @@ export async function stellarRpcProbe(): Promise<ProbeResult> {
     };
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  timeout.unref();
+
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
     const res = await fetch(url, { method: "GET", signal: controller.signal });
-    clearTimeout(timeout);
 
     const latencyMs = Date.now() - start;
     const ok = res.status < 500;
@@ -69,5 +74,71 @@ export async function stellarRpcProbe(): Promise<ProbeResult> {
       detail: err instanceof Error ? err.message : "unknown error",
       latencyMs: Date.now() - start,
     };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Probe: verify the SQLite database is reachable with a lightweight SELECT 1.
+ * Uses the shared singleton returned by {@link getDb}.
+ */
+export async function dbProbe(): Promise<ProbeResult> {
+  const start = Date.now();
+  try {
+    getDb().prepare("SELECT 1").run();
+    return { name: "db", ok: true, latencyMs: Date.now() - start };
+  } catch (err: unknown) {
+    return {
+      name: "db",
+      ok: false,
+      detail: err instanceof Error ? err.message : "unknown error",
+      latencyMs: Date.now() - start,
+    };
+  }
+}
+
+/**
+ * Probe: verify Redis is reachable with a PING command.
+ * Opens a short-lived connection using environment configuration, sends PING,
+ * then disconnects. Times out after {@link REDIS_PROBE_TIMEOUT_MS} ms.
+ */
+export async function redisProbe(): Promise<ProbeResult> {
+  const start = Date.now();
+  const host = process.env["REDIS_HOST"] ?? "localhost";
+  const port = parseInt(process.env["REDIS_PORT"] ?? "6379", 10);
+  const password = process.env["REDIS_PASSWORD"] || undefined;
+
+  const client = new Redis({
+    host,
+    port,
+    password,
+    connectTimeout: REDIS_PROBE_TIMEOUT_MS,
+    commandTimeout: REDIS_PROBE_TIMEOUT_MS,
+    maxRetriesPerRequest: 0,
+    enableReadyCheck: false,
+    lazyConnect: true,
+  });
+
+  // Suppress unhandled-error events — errors are captured via the try/catch.
+  client.on("error", () => undefined);
+
+  try {
+    await client.connect();
+    await client.ping();
+    return { name: "redis", ok: true, latencyMs: Date.now() - start };
+  } catch (err: unknown) {
+    return {
+      name: "redis",
+      ok: false,
+      detail: err instanceof Error ? err.message : "unknown error",
+      latencyMs: Date.now() - start,
+    };
+  } finally {
+    try {
+      client.disconnect();
+    } catch {
+      // best-effort cleanup
+    }
   }
 }

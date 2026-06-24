@@ -24,6 +24,7 @@ export type ContractStatus =
  * @field amount      - Contract value in stroops (1 XLM = 10_000_000 stroops)
  * @field status      - Current lifecycle status
  * @field createdAt   - ISO-8601 creation timestamp
+ * @field version     - OCC version counter; non-negative integer, starts at 0
  */
 export interface Contract {
   id: string;
@@ -33,6 +34,7 @@ export interface Contract {
   amount: number;
   status: ContractStatus;
   createdAt: string;
+  version: number; // non-negative integer, starts at 0
 }
 
 /** Role a user may hold on the platform. */

@@ -260,13 +260,10 @@ describe('Deployment Integration Tests', () => {
       process.env.API_BASE_URL = 'invalid-url';
       process.env.CORS_ORIGINS = 'https://app.example.com';
 
-      const config = loadEnvironmentConfig();
-      const validation = validateDeploymentConfig(config);
+      // Load and validate configuration - should fail fast due to Zod validation
+      expect(() => loadEnvironmentConfig()).toThrow();
 
-      // Deployment should fail validation
-      expect(validation.valid).toBe(false);
-
-      // Perform rollback
+      // Perform rollback regardless of initial failure
       const rollback = await rollbackDeployment({
         environment: 'production',
         targetVersion: 'v0.9.0',

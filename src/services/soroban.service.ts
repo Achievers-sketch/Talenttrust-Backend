@@ -9,7 +9,7 @@ export class SorobanService {
    * @param contractId Internal database reference ID.
    * @param amount The escrow amount.
    */
-  public async prepareEscrow(contractId: string, amount: number): Promise<boolean> {
+  public async prepareEscrow(_contractId: string, _amount: number): Promise<boolean> {
     // Mock implementation for Stellar network interaction
     // console.log(`[SorobanService] Preparing escrow for contract ${contractId} with amount ${amount}`);
     return true;
@@ -19,7 +19,7 @@ export class SorobanService {
    * Reads the current status of the escrow from the smart contract.
    * @param contractId Internal database reference ID.
    */
-  public async getEscrowStatus(contractId: string): Promise<string> {
+  public async getEscrowStatus(_contractId: string): Promise<string> {
     return 'FUNDED';
   }
 }

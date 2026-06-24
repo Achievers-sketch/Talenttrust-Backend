@@ -1,15 +1,10 @@
 import { ContractMetadataService } from './contractMetadata.service';
 import { contractMetadataRepository } from './contractMetadata.repository';
-import { database } from '../../database';
 import { CreateContractMetadataRequest, UpdateContractMetadataRequest } from './contractMetadata.types';
 
 // Mock the repository
 jest.mock('./contractMetadata.repository');
 const mockRepository = contractMetadataRepository as jest.Mocked<typeof contractMetadataRepository>;
-
-// Mock the database
-jest.mock('../../database');
-const mockDatabase = database as jest.Mocked<typeof database>;
 
 describe('ContractMetadataService', () => {
   let service: ContractMetadataService;

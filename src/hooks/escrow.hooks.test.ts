@@ -7,8 +7,8 @@ describe('EscrowHooks', () => {
   let sendWebSpy: jest.SpyInstance;
 
   beforeEach(() => {
-    sendEmailSpy = jest.spyOn(notificationService, 'sendEmail').mockResolvedValue(true);
-    sendWebSpy = jest.spyOn(notificationService, 'sendWebNotification').mockResolvedValue(true);
+    sendEmailSpy = jest.spyOn(notificationService, 'sendEmail').mockResolvedValue({ success: true } as any);
+    sendWebSpy = jest.spyOn(notificationService, 'sendWebNotification').mockResolvedValue({ success: true } as any);
   });
 
   afterEach(() => {

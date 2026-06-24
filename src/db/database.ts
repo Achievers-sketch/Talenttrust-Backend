@@ -5,8 +5,9 @@
  * environment variable (default: talenttrust.db).  Pass ':memory:' during
  * tests to use an ephemeral, isolated in-memory database.
  *
- * Runs schema migrations synchronously on first open so the tables are
- * guaranteed to exist before the application serves any requests.
+ * Runs schema migrations synchronously on first open so applied migration
+ * checksums are verified and tables are guaranteed to exist before the
+ * application serves any requests.
  *
  * Security notes:
  *  - All SQL statements in repositories use prepared statements / parameter
@@ -15,8 +16,10 @@
  *  - In production, restrict filesystem permissions on the DB file (chmod 600).
  */
 
-import Database from "better-sqlite3";
+import * as Database from "./betterSqlite3";
+
 import path from "path";
+import { runMigrations } from "./migrations";
 
 let instance: Database.Database | null = null;
 
@@ -34,8 +37,14 @@ export function getDb(dbPath?: string): Database.Database {
     process.env["DB_PATH"] ??
     path.join(process.cwd(), "talenttrust.db");
 
-  instance = new Database(resolvedPath);
+  instance = new Database.default(resolvedPath);
+
+  // Apply idempotent pragmas for performance and concurrency
   instance.pragma("journal_mode = WAL"); // Better concurrency
+  instance.pragma("synchronous = NORMAL"); // Balance durability and performance
+  const busyTimeout = parseInt(process.env["DB_BUSY_TIMEOUT"] ?? "5000", 10);
+  instance.pragma(`busy_timeout = ${busyTimeout}`); // Configurable timeout (default 5000ms)
+
   instance.pragma("foreign_keys = ON"); // Enforce FK constraints
 
   runMigrations(instance);
@@ -53,43 +62,3 @@ export function closeDb(): void {
   }
 }
 
-/**
- * Runs all DDL migrations against the provided database connection.
- * Each statement uses IF NOT EXISTS so re-runs are idempotent.
- *
- * @param db - An open better-sqlite3 Database instance.
- */
-function runMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id          TEXT    PRIMARY KEY,
-      username    TEXT    NOT NULL UNIQUE,
-      email       TEXT    NOT NULL UNIQUE,
-      role        TEXT    NOT NULL DEFAULT 'client'
-                          CHECK (role IN ('client', 'freelancer', 'both')),
-      created_at  TEXT    NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS contracts (
-      id            TEXT    PRIMARY KEY,
-      title         TEXT    NOT NULL,
-      client_id     TEXT    NOT NULL REFERENCES users(id),
-      freelancer_id TEXT    NOT NULL REFERENCES users(id),
-      amount        INTEGER NOT NULL CHECK (amount >= 0),
-      status        TEXT    NOT NULL DEFAULT 'draft'
-                            CHECK (status IN (
-                              'draft', 'active', 'completed', 'disputed', 'cancelled'
-                            )),
-      created_at    TEXT    NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_contracts_client_id
-      ON contracts(client_id);
-
-    CREATE INDEX IF NOT EXISTS idx_contracts_freelancer_id
-      ON contracts(freelancer_id);
-
-    CREATE INDEX IF NOT EXISTS idx_contracts_status
-      ON contracts(status);
-  `);
-}

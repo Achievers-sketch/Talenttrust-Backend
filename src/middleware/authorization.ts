@@ -36,14 +36,16 @@
  *    leakage to attackers.
  */
 
-import type { Request, Response, NextFunction } from "express";
+import type { Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { isAuthorized, isValidRole } from "../lib/authorization";
 import type { Action, User, Resource, Role, AuthenticatedRequest } from "../lib/types";
 
 // ─── JWT configuration ────────────────────────────────────────────────────────
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "";
+// Read lazily at call time so test suites can set process.env.JWT_SECRET before
+// making requests without module-load-order issues.
+const getJwtSecret = () => process.env.JWT_SECRET ?? "";
 
 /**
  * Shape of the decoded JWT payload expected by this platform.
@@ -60,11 +62,25 @@ interface JwtPayload {
 // ─── Error response helpers ───────────────────────────────────────────────────
 
 function unauthorized(res: Response, message = "Unauthorized"): void {
-  res.status(401).json({ error: message });
+  const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  res.status(401).json({
+    error: {
+      code: 'unauthorized',
+      message,
+      requestId,
+    },
+  });
 }
 
 function forbidden(res: Response, message = "Forbidden"): void {
-  res.status(403).json({ error: message });
+  const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  res.status(403).json({
+    error: {
+      code: 'forbidden',
+      message,
+      requestId,
+    },
+  });
 }
 
 // ─── requireAuth ─────────────────────────────────────────────────────────────
@@ -101,7 +117,7 @@ export function requireAuth(
 
   try {
     // jwt.verify throws for any invalid token (bad signature, expired, etc.)
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    const decoded = jwt.verify(token, getJwtSecret()) as JwtPayload;
 
     // Guard required claims — a well-formed token always carries these.
     if (!decoded.sub || !decoded.email) {
@@ -222,7 +238,14 @@ export function requirePermission(
         if (ownerId === null) {
           // Record does not exist — return 404 rather than leaking whether
           // the record exists but is forbidden.
-          res.status(404).json({ error: "Resource not found." });
+          const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+          res.status(404).json({
+            error: {
+              code: 'not_found',
+              message: 'Resource not found.',
+              requestId,
+            },
+          });
           return;
         }
 
@@ -237,14 +260,27 @@ export function requirePermission(
       });
 
       if (!result.granted) {
+        console.log('isAuthorized denied:', JSON.stringify(result), 'Inputs:', JSON.stringify({
+          user: req.user,
+          resource,
+          action,
+          resourceOwnerId,
+        }));
         forbidden(res, "You do not have permission to perform this action.");
         return;
       }
 
       next();
-    } catch (err) {
+    } catch {
       // Resolver threw — treat as a server error, not an auth failure.
-      res.status(500).json({ error: "Authorization check failed." });
+      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+      res.status(500).json({
+        error: {
+          code: 'internal_error',
+          message: 'Authorization check failed.',
+          requestId,
+        },
+      });
     }
   };
 }

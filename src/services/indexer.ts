@@ -1,5 +1,3 @@
-import { Response, Request } from 'express';
-
 export enum EventType {
   EscrowCreated = 'escrow:created',
   EscrowCompleted = 'escrow:completed',

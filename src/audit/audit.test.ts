@@ -9,7 +9,6 @@
  * - Security: tamper detection, mutation prevention, input validation
  */
 
-import { createHash } from 'crypto';
 import request from 'supertest';
 import express from 'express';
 import { AuditStore, GENESIS_HASH, computeEntryHash } from './store';
@@ -17,6 +16,17 @@ import { AuditService } from './service';
 import { auditMiddleware } from './middleware';
 import { auditRouter } from './router';
 import type { AuditEntry, CreateAuditEntryInput } from './types';
+import {
+  isSensitiveHeader,
+  isSensitiveKey,
+  maskEmail,
+  redactHeaders,
+  redactBody,
+  buildAuditMetadata,
+  REDACTED,
+} from './redact';
+import { createProtectedEndpointAuditMiddleware } from './protectedEndpointMiddleware';
+import { createToken } from '../auth/authenticate';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -40,7 +50,6 @@ function buildTestApp(store?: AuditStore) {
     // Swap the singleton for an isolated store in integration tests
     const svc = new AuditService(store);
     const router = express.Router();
-    const { auditRouter: _ignored, ...rest } = require('./router');
     // Use a fresh router wired to the isolated service
     router.get('/', (req, res) => {
       const limit = Math.min(parseInt(req.query['limit'] as string ?? '100', 10) || 100, 1000);
@@ -264,7 +273,7 @@ describe('AuditStore', () => {
       const all = store.getAll();
       store._reset();
       // Re-insert first entry normally
-      const first = store.append(makeInput());
+      store.append(makeInput());
       // Manually push a tampered second entry (bypass append)
       const tampered: AuditEntry = Object.freeze({
         ...all[1],
@@ -372,6 +381,15 @@ describe('AuditService', () => {
     service.log(makeInput({ actor: 'alice' }));
     service.log(makeInput({ actor: 'bob' }));
     expect(service.query({ actor: 'alice' })).toHaveLength(1);
+  });
+
+  it('stream() yields entries without preloading all records', () => {
+    service.log(makeInput({ actor: 'alice' }));
+    service.log(makeInput({ actor: 'bob' }));
+
+    const entries = Array.from(service.stream({ limit: 1 }));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].actor).toBe('alice');
   });
 
   it('getById() returns correct entry', () => {
@@ -559,6 +577,22 @@ describe('auditRouter (singleton, real router)', () => {
     const app = buildTestApp();
     await request(app).get('/api/v1/audit/integrity').expect(200);
   });
+
+  it('GET /api/v1/audit/export streams NDJSON output', async () => {
+    const app = buildTestApp();
+    singletonStore.append(makeInput({ actor: 'stream-user-1' }));
+    singletonStore.append(makeInput({ actor: 'stream-user-2' }));
+
+    const res = await request(app)
+      .get('/api/v1/audit/export?limit=1')
+      .expect(200);
+
+    expect(res.headers['content-type']).toContain('application/x-ndjson');
+    const lines = res.text.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const first = JSON.parse(lines[0]) as { actor: string };
+    expect(first.actor).toBe('stream-user-1');
+  });
 });
 
 // ─── Security threat scenarios ────────────────────────────────────────────────
@@ -650,5 +684,483 @@ describe('Security: threat scenarios', () => {
     store.append(makeInput({ action: 'CONTRACT_UPDATED' }));
     const results = store.query({ offset: -999 });
     expect(results).toHaveLength(2);
+  });
+});
+
+// ─── redact module ────────────────────────────────────────────────────────────
+
+describe('isSensitiveHeader', () => {
+  it.each([
+    'authorization',
+    'Authorization',
+    'AUTHORIZATION',
+    'cookie',
+    'Cookie',
+    'set-cookie',
+    'x-api-key',
+    'x-auth-token',
+    'x-access-token',
+  ])('flags %s as sensitive', (header) => {
+    expect(isSensitiveHeader(header)).toBe(true);
+  });
+
+  it.each([
+    'content-type',
+    'accept',
+    'x-request-id',
+    'user-agent',
+    'host',
+  ])('does not flag %s as sensitive', (header) => {
+    expect(isSensitiveHeader(header)).toBe(false);
+  });
+});
+
+describe('isSensitiveKey', () => {
+  it.each([
+    'password',
+    'userPassword',
+    'PASSWORD',
+    'secret',
+    'clientSecret',
+    'token',
+    'accessToken',
+    'credential',
+    'apiCredential',
+    'apikey',
+    'api_key',
+    'privateKey',
+  ])('flags key "%s" as sensitive', (key) => {
+    expect(isSensitiveKey(key)).toBe(true);
+  });
+
+  it.each([
+    'username',
+    'email',
+    'name',
+    'description',
+    'amount',
+    'contractId',
+  ])('does not flag key "%s" as sensitive', (key) => {
+    expect(isSensitiveKey(key)).toBe(false);
+  });
+});
+
+describe('maskEmail', () => {
+  it('masks a standard email to 3-char prefix', () => {
+    expect(maskEmail('alice@example.com')).toBe('ali***@example.com');
+  });
+
+  it('uses the full local part when it is shorter than 3 chars', () => {
+    expect(maskEmail('ab@host.io')).toBe('ab***@host.io');
+  });
+
+  it('returns non-email strings unchanged', () => {
+    expect(maskEmail('not-an-email')).toBe('not-an-email');
+    expect(maskEmail('hello world')).toBe('hello world');
+    expect(maskEmail('')).toBe('');
+  });
+
+  it('handles edge-case single-char local part', () => {
+    expect(maskEmail('a@b.co')).toBe('a***@b.co');
+  });
+});
+
+describe('redactHeaders', () => {
+  it('replaces authorization header with REDACTED', () => {
+    const headers = {
+      authorization: 'Bearer super-secret-token',
+      'content-type': 'application/json',
+    };
+    const result = redactHeaders(headers);
+    expect(result['authorization']).toBe(REDACTED);
+    expect(result['content-type']).toBe('application/json');
+  });
+
+  it('redacts cookie and set-cookie headers', () => {
+    const headers = { cookie: 'session=abc123', 'set-cookie': 'id=xyz' };
+    const result = redactHeaders(headers);
+    expect(result['cookie']).toBe(REDACTED);
+    expect(result['set-cookie']).toBe(REDACTED);
+  });
+
+  it('redacts x-api-key, x-auth-token, and x-access-token', () => {
+    const headers = {
+      'x-api-key': 'key-value',
+      'x-auth-token': 'auth-value',
+      'x-access-token': 'access-value',
+    };
+    const result = redactHeaders(headers);
+    expect(result['x-api-key']).toBe(REDACTED);
+    expect(result['x-auth-token']).toBe(REDACTED);
+    expect(result['x-access-token']).toBe(REDACTED);
+  });
+
+  it('does not mutate the original headers object', () => {
+    const headers = { authorization: 'Bearer token' };
+    redactHeaders(headers);
+    expect(headers.authorization).toBe('Bearer token');
+  });
+
+  it('passes non-sensitive headers through unchanged', () => {
+    const headers = { 'x-request-id': 'req-123', host: 'localhost' };
+    const result = redactHeaders(headers);
+    expect(result['x-request-id']).toBe('req-123');
+    expect(result['host']).toBe('localhost');
+  });
+});
+
+describe('redactBody', () => {
+  it('returns null and undefined unchanged', () => {
+    expect(redactBody(null)).toBeNull();
+    expect(redactBody(undefined)).toBeUndefined();
+  });
+
+  it('returns numbers and booleans unchanged', () => {
+    expect(redactBody(42)).toBe(42);
+    expect(redactBody(true)).toBe(true);
+  });
+
+  it('redacts sensitive keys in a flat object', () => {
+    const body = { username: 'alice', password: 's3cr3t', email: 'alice@example.com' };
+    const result = redactBody(body) as Record<string, unknown>;
+    expect(result['username']).toBe('alice');
+    expect(result['password']).toBe(REDACTED);
+    expect(result['email']).toBe('ali***@example.com');
+  });
+
+  it('redacts nested sensitive keys recursively', () => {
+    const body = { user: { id: 'u1', secret: 'shhh', profile: { token: 'tok' } } };
+    const result = redactBody(body) as Record<string, unknown>;
+    const user = result['user'] as Record<string, unknown>;
+    expect(user['id']).toBe('u1');
+    expect(user['secret']).toBe(REDACTED);
+    const profile = user['profile'] as Record<string, unknown>;
+    expect(profile['token']).toBe(REDACTED);
+  });
+
+  it('traverses arrays and redacts sensitive keys within elements', () => {
+    const body = [{ name: 'alice', password: 'pw1' }, { name: 'bob', password: 'pw2' }];
+    const result = redactBody(body) as Record<string, unknown>[];
+    expect(result[0]['name']).toBe('alice');
+    expect(result[0]['password']).toBe(REDACTED);
+    expect(result[1]['password']).toBe(REDACTED);
+  });
+
+  it('masks email strings in non-sensitive fields', () => {
+    const body = { contactEmail: 'bob@domain.org' };
+    const result = redactBody(body) as Record<string, unknown>;
+    expect(result['contactEmail']).toBe('bob***@domain.org');
+  });
+
+  it('does not mutate the original object', () => {
+    const body = { password: 'original' };
+    redactBody(body);
+    expect(body.password).toBe('original');
+  });
+});
+
+describe('buildAuditMetadata', () => {
+  it('returns the expected shape', () => {
+    const result = buildAuditMetadata(
+      'GET',
+      '/api/v1/contracts',
+      { 'content-type': 'application/json', authorization: 'Bearer tok' },
+      undefined,
+      {},
+      200,
+      'req-uuid-1',
+    );
+    expect(result['method']).toBe('GET');
+    expect(result['path']).toBe('/api/v1/contracts');
+    expect(result['statusCode']).toBe(200);
+    expect(result['requestId']).toBe('req-uuid-1');
+    expect(result['body']).toBeNull();
+    expect(result['query']).toBeNull();
+  });
+
+  it('redacts the authorization header in the output', () => {
+    const result = buildAuditMetadata(
+      'POST',
+      '/api/v1/contracts',
+      { authorization: 'Bearer super-secret' },
+      { name: 'test' },
+      {},
+      201,
+      'req-uuid-2',
+    );
+    const headers = result['headers'] as Record<string, unknown>;
+    expect(headers['authorization']).toBe(REDACTED);
+  });
+
+  it('redacts sensitive body fields', () => {
+    const result = buildAuditMetadata(
+      'POST',
+      '/api/v1/users',
+      {},
+      { username: 'carol', password: 'hunter2' },
+      {},
+      201,
+      'req-uuid-3',
+    );
+    const body = result['body'] as Record<string, unknown>;
+    expect(body['username']).toBe('carol');
+    expect(body['password']).toBe(REDACTED);
+  });
+
+  it('sets requestId to null when undefined', () => {
+    const result = buildAuditMetadata('GET', '/', {}, undefined, {}, 200, undefined);
+    expect(result['requestId']).toBeNull();
+  });
+
+  it('includes non-empty query string after redaction', () => {
+    const result = buildAuditMetadata(
+      'GET',
+      '/api/v1/contracts',
+      {},
+      undefined,
+      { status: 'active', token: 'leaked' },
+      200,
+      'req-1',
+    );
+    const query = result['query'] as Record<string, unknown>;
+    expect(query['status']).toBe('active');
+    expect(query['token']).toBe(REDACTED);
+  });
+});
+
+// ─── protectedEndpointAuditMiddleware ─────────────────────────────────────────
+
+describe('protectedEndpointAuditMiddleware', () => {
+  let store: AuditStore;
+  let service: AuditService;
+
+  beforeEach(() => {
+    store = new AuditStore();
+    service = new AuditService(store);
+  });
+
+  function buildProtectedApp(opts: {
+    method?: string;
+    path?: string;
+    statusCode?: number;
+    withUser?: boolean;
+    requestId?: string;
+    body?: Record<string, unknown>;
+  } = {}) {
+    const {
+      path = '/api/v1/contracts',
+      statusCode = 200,
+      withUser = false,
+      requestId = 'test-req-id',
+      body,
+    } = opts;
+
+    const app = express();
+    app.use(express.json());
+
+    // Simulate requestIdMiddleware by pre-populating res.locals
+    app.use((_req, res, next) => {
+      res.locals['requestId'] = requestId;
+      next();
+    });
+
+    app.use(createProtectedEndpointAuditMiddleware(service));
+
+    // Simulate auth middleware by conditionally setting req.user
+    if (withUser) {
+      app.use((req: express.Request, _res, next) => {
+        (req as any).user = { userId: 'user-42', role: 'freelancer' };
+        next();
+      });
+    }
+
+    app.all(path, (req, res) => {
+      if (body !== undefined) {
+        // echo body back so we can verify it was received
+      }
+      res.status(statusCode).json({ ok: true });
+    });
+
+    return app;
+  }
+
+  it('emits ENDPOINT_ACCESS for a GET request returning 200', async () => {
+    const app = buildProtectedApp({ method: 'GET', statusCode: 200 });
+    await request(app).get('/api/v1/contracts').expect(200);
+
+    expect(store.count()).toBe(1);
+    const entry = store.getAll()[0];
+    expect(entry.action).toBe('ENDPOINT_ACCESS');
+    expect(entry.severity).toBe('INFO');
+  });
+
+  it('emits ENDPOINT_MUTATION for a POST request returning 201', async () => {
+    const app = buildProtectedApp({ statusCode: 201 });
+    await request(app).post('/api/v1/contracts').send({ name: 'c1' }).expect(201);
+
+    expect(store.count()).toBe(1);
+    const entry = store.getAll()[0];
+    expect(entry.action).toBe('ENDPOINT_MUTATION');
+    expect(entry.severity).toBe('INFO');
+  });
+
+  it('emits ENDPOINT_MUTATION for PATCH, PUT, and DELETE', async () => {
+    for (const verb of ['patch', 'put', 'delete'] as const) {
+      const innerStore = new AuditStore();
+      const innerService = new AuditService(innerStore);
+      const app = express();
+      app.use(createProtectedEndpointAuditMiddleware(innerService));
+      app.all('/api/v1/contracts/123', (_req, res) => res.status(200).json({}));
+
+      await request(app)[verb]('/api/v1/contracts/123').expect(200);
+      expect(innerStore.getAll()[0].action).toBe('ENDPOINT_MUTATION');
+    }
+  });
+
+  it('emits AUTH_FAILED with WARNING severity for a 401 response', async () => {
+    const app = express();
+    app.use(createProtectedEndpointAuditMiddleware(service));
+    app.get('/api/v1/contracts', (_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+    });
+
+    await request(app).get('/api/v1/contracts').expect(401);
+
+    expect(store.count()).toBe(1);
+    const entry = store.getAll()[0];
+    expect(entry.action).toBe('AUTH_FAILED');
+    expect(entry.severity).toBe('WARNING');
+  });
+
+  it('emits AUTH_FAILED with WARNING severity for a 403 response', async () => {
+    const app = express();
+    app.use(createProtectedEndpointAuditMiddleware(service));
+    app.get('/api/v1/contracts', (_req, res) => {
+      res.status(403).json({ error: 'Forbidden' });
+    });
+
+    await request(app).get('/api/v1/contracts').expect(403);
+
+    const entry = store.getAll()[0];
+    expect(entry.action).toBe('AUTH_FAILED');
+    expect(entry.severity).toBe('WARNING');
+  });
+
+  it('sets actor to "anonymous" when req.user is not set', async () => {
+    const app = buildProtectedApp({ withUser: false });
+    await request(app).get('/api/v1/contracts').expect(200);
+
+    expect(store.getAll()[0].actor).toBe('anonymous');
+  });
+
+  it('sets actor to req.user.userId when authenticated', async () => {
+    const app = buildProtectedApp({ withUser: true });
+    await request(app).get('/api/v1/contracts').expect(200);
+
+    expect(store.getAll()[0].actor).toBe('user-42');
+  });
+
+  it('uses requestId from res.locals as correlationId', async () => {
+    const app = buildProtectedApp({ requestId: 'my-trace-id' });
+    await request(app).get('/api/v1/contracts').expect(200);
+
+    expect(store.getAll()[0].correlationId).toBe('my-trace-id');
+  });
+
+  it('derives resource from the URL path', async () => {
+    const app = buildProtectedApp({ path: '/api/v1/reputation/u1' });
+    await request(app).get('/api/v1/reputation/u1').expect(200);
+
+    expect(store.getAll()[0].resource).toBe('reputation');
+    expect(store.getAll()[0].resourceId).toBe('u1');
+  });
+
+  it('sets resource to "endpoint" for non-versioned paths', async () => {
+    const app = express();
+    app.use(createProtectedEndpointAuditMiddleware(service));
+    app.get('/health', (_req, res) => res.status(200).json({}));
+
+    await request(app).get('/health').expect(200);
+
+    expect(store.getAll()[0].resource).toBe('endpoint');
+  });
+
+  it('does NOT persist the Authorization header value in metadata', async () => {
+    const token = createToken('u1', 'admin');
+    const app = buildProtectedApp({ withUser: false });
+
+    await request(app)
+      .get('/api/v1/contracts')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const entry = store.getAll()[0];
+    const headers = (entry.metadata['headers'] as Record<string, unknown>);
+    expect(headers['authorization']).toBe(REDACTED);
+    // Make sure the actual token value is nowhere in the serialised entry
+    expect(JSON.stringify(entry)).not.toContain(token);
+  });
+
+  it('redacts password fields from the request body in metadata', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use((_req, res, next) => { res.locals['requestId'] = 'r1'; next(); });
+    app.use(createProtectedEndpointAuditMiddleware(service));
+    app.post('/api/v1/users', (_req, res) => res.status(201).json({}));
+
+    await request(app)
+      .post('/api/v1/users')
+      .send({ username: 'alice', password: 'hunter2' })
+      .expect(201);
+
+    const body = store.getAll()[0].metadata['body'] as Record<string, unknown>;
+    expect(body['username']).toBe('alice');
+    expect(body['password']).toBe(REDACTED);
+  });
+
+  it('emits WARNING severity for non-auth 4xx errors', async () => {
+    const app = express();
+    app.use(createProtectedEndpointAuditMiddleware(service));
+    app.get('/api/v1/contracts/missing', (_req, res) => {
+      res.status(404).json({ error: 'Not found' });
+    });
+
+    await request(app).get('/api/v1/contracts/missing').expect(404);
+
+    const entry = store.getAll()[0];
+    expect(entry.severity).toBe('WARNING');
+    // 404 is not an auth failure — action should be ENDPOINT_ACCESS (GET)
+    expect(entry.action).toBe('ENDPOINT_ACCESS');
+  });
+
+  it('records the HTTP method and path in metadata', async () => {
+    const app = buildProtectedApp({ path: '/api/v1/contracts', statusCode: 200 });
+    await request(app).get('/api/v1/contracts').expect(200);
+
+    const meta = store.getAll()[0].metadata;
+    expect(meta['method']).toBe('GET');
+    expect(meta['path']).toBe('/api/v1/contracts');
+    expect(meta['statusCode']).toBe(200);
+  });
+
+  it('silently swallows audit errors without breaking the response', async () => {
+    const brokenService = new AuditService(new AuditStore());
+    jest.spyOn(brokenService, 'log').mockImplementation(() => {
+      throw new Error('store exploded');
+    });
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const app = express();
+    app.use(createProtectedEndpointAuditMiddleware(brokenService));
+    app.get('/api/v1/contracts', (_req, res) => res.status(200).json({ ok: true }));
+
+    await request(app).get('/api/v1/contracts').expect(200);
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[protectedEndpointAuditMiddleware]'),
+      expect.any(Error),
+    );
+
+    consoleSpy.mockRestore();
   });
 });

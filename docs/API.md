@@ -1,3 +1,40 @@
+## Response Envelope Contract
+
+All API endpoints return a consistent JSON envelope.
+
+### Success Response
+
+```json
+{
+  "status": "success",
+  "data": <payload>,
+  "meta": <optional pagination or extra metadata>,
+  "requestId": "trace-id-from-request"
+}
+```
+
+### Error Response
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "machine_readable_code",
+    "message": "Human readable message",
+    "requestId": "trace-id-from-request"
+  }
+}
+```
+
+### Helper Functions
+
+Use `ok(res, data, meta?, status?)` and `fail(res, code, message, status?)` from `src/utils/apiResponse.ts` in all controllers.
+
+- `requestId` is always included from `res.locals.requestId`
+- Falls back to `"unknown"` if requestId is not set
+- `meta` is omitted from the response when not provided
+
+---
 # TalentTrust Backend API Documentation
 
 ## Overview
@@ -10,6 +47,63 @@ The TalentTrust Backend API provides RESTful endpoints for managing escrow contr
 http://localhost:3001/api/v1
 ```
 
+## Request Headers
+
+### Standard Request Headers
+
+All requests support the following standard headers for request tracing and correlation:
+
+#### X-Request-Id
+
+Unique identifier for each HTTP request. If provided, the server will echo back the same value in the response; otherwise, a new UUID v4 is generated server-side.
+
+- **Type:** String (UUID v4 or alphanumeric+hyphen/underscore, max 128 chars)
+- **Required:** No
+- **Example:** `X-Request-Id: 550e8400-e29b-41d4-a716-446655440000`
+
+#### X-Correlation-Id
+
+Optional correlation ID for distributed tracing across service boundaries. Enables tracking a single logical operation through multiple services and components (e.g., from API ingress through event processing to outbound webhook deliveries).
+
+- **Type:** String (alphanumeric+hyphen/underscore, max 128 chars)
+- **Required:** No
+- **Format:** Alphanumeric characters, hyphens, and underscores only
+- **Example:** `X-Correlation-Id: trace-12345-abc`
+
+**Security Note:** The correlation ID is validated for injection attacks. Only safe characters are accepted; invalid IDs are rejected and not echoed back in the response.
+
+### Propagation Through the System
+
+When a request includes `X-Correlation-Id`:
+1. The ID is validated and attached to the request-scoped logger context
+2. The ID is included in all event processing audit records (for deduplication and tracing)
+3. The ID is propagated to outbound webhook deliveries in the `X-Correlation-Id` header
+4. The ID is echoed back in the response header `X-Correlation-Id`
+
+This enables end-to-end tracing of a single logical operation across:
+- API request ingress
+- Event ingestion and processing
+- Webhook delivery attempts
+- All related log entries
+
+### Example: Distributed Tracing Flow
+
+```bash
+# 1. Client initiates request with correlation ID
+curl -X GET http://localhost:3001/api/v1/contracts \
+  -H "X-Correlation-Id: my-trace-id-001"
+
+# 2. Response includes both request ID and echoed correlation ID
+# Response Headers:
+# X-Request-Id: 550e8400-e29b-41d4-a716-446655440000
+# X-Correlation-Id: my-trace-id-001
+```
+
+The same `X-Correlation-Id` value will appear in:
+- Request-scoped logs
+- Event processing audit records
+- Webhook delivery attempt headers
+
 ## Authentication
 
 The API uses Bearer token authentication. Include the token in the Authorization header:
@@ -21,6 +115,257 @@ Authorization: Bearer <token>
 ### Demo Tokens
 - `demo-admin-token` - Admin user with full access
 - `demo-user-token` - Regular user with limited access
+
+## Error Responses
+
+All terminal API errors are serialized through the safe error message policy.
+Internal exception details, stack traces, file paths, SQL fragments, dependency hostnames, tokens, and secrets are logged only through redacted structured logs and are never returned to API clients.
+
+Every policy-managed error response uses this envelope:
+
+```json
+{
+  "error": {
+    "code": "machine_readable_code",
+    "message": "safe client-facing message",
+    "requestId": "request-correlation-id"
+  }
+}
+```
+
+Validation responses may include a `details` array with field-level Zod issue metadata. These details are also passed through the same safe-message filters.
+
+Common status/code mappings:
+
+| Status | Code | Message |
+|---:|---|---|
+| 400 | `invalid_json` | Malformed JSON payload |
+| 400 | `validation_error` | Request validation failed |
+| 401 | `unauthorized` | Authentication is required |
+| 403 | `forbidden` | You do not have permission to perform this action |
+| 404 | `not_found` | The requested resource was not found |
+| 409 | `conflict` | The request conflicts with the current state |
+| 413 | `payload_too_large` | Payload Too Large |
+| 415 | `unsupported_media_type` | Unsupported Media Type |
+| 500 | `internal_error` | An unexpected error occurred |
+| 503 | `dependency_unavailable` | A required service is temporarily unavailable |
+
+Use the returned `requestId` when contacting support; it ties the response to redacted server-side logs without exposing sensitive internals.
+
+## Configuration API
+### Get Application Configuration
+**GET** `/api/config`
+
+**Access**: Public
+
+Returns application configuration including allowed assets.
+
+## System & Dependency Health
+### Get Dependency Scan Report
+**GET** `/api/v1/dependency-scan`
+
+**Access**: Admin (`Authorization: Bearer <admin-token>`)
+
+Admin-only. Returns production dependency scan status and remediation guidance.
+
+## Admin Operations
+Admin endpoints provide operational visibility and are secured via the `adminAuthGuard`.
+
+### Queue Health
+**GET** `/api/v1/admin/queue-health`
+
+Returns health metrics for the background job queues, including recent failures and pending job counts.
+
+### Circuit Breakers
+**GET** `/api/v1/admin/circuit-breakers`
+
+Returns the current state (closed, open, half-open) and failure/success counters for all registered upstream circuit breakers. Useful for monitoring upstream dependency health without exposing internals to unauthenticated callers.
+
+## Deployment API (Blue/Green)
+Manage zero-downtime deployments. All deployment routes are mounted at `/api/v1/admin/deploy` and require admin authentication via JWT or API key.
+
+### Get Deployment Status
+**GET** `/api/v1/admin/deploy/status`
+
+Returns the current deployment state without modifying it. Returns 200 with deployment state JSON.
+
+### Switch to Green
+**POST** `/api/v1/admin/deploy/switch-green`
+
+Promotes the green instance to active status.
+- Idempotent if already green (returns 202 Accepted or 200 OK).
+- Returns 502 Bad Gateway if the green instance is unhealthy.
+- Returns 409 Conflict if a switch is already in progress.
+
+### Rollback to Blue
+**POST** `/api/v1/admin/deploy/rollback`
+
+Reverts traffic to the blue instance. Idempotent if already blue (returns `200 OK`).
+
+## Contracts API
+
+### Overview
+
+The Contracts API provides endpoints for managing escrow contract records. Contract records include a `version` field that enables Optimistic Concurrency Control (OCC) on update operations.
+
+### Authentication & Authorization
+
+All contract endpoints require a valid `Authorization: Bearer <jwt>` header (HS256, signed with `JWT_SECRET`).
+
+#### Role-based access matrix
+
+| Method | Path | admin | client | freelancer |
+|--------|------|-------|--------|------------|
+| GET | `/contracts` | ✅ | ❌ (ownOnly — collection requires owner resolver) | ❌ (ownOnly) |
+| POST | `/contracts` | ✅ | ✅ | ❌ |
+| GET | `/contracts/:id` | ✅ | ✅ (ownOnly) | ✅ (ownOnly) |
+| PATCH | `/contracts/:id` | ✅ | ✅ (ownOnly) | ✅ (ownOnly) |
+| DELETE | `/contracts/:id` | ✅ | ❌ | ❌ |
+
+**ownOnly** — the caller's JWT `sub` must equal the contract's `clientId`. The owner check is resolved from the database; it is never derived from caller-supplied parameters.
+
+#### Error responses
+
+- `401 Unauthorized` — missing header, malformed token, expired token, wrong secret, or invalid role claim.
+- `403 Forbidden` — authenticated but role/ownership check failed.
+- `404 Not Found` — the contract does not exist (also returned by `requirePermission` when the `getResourceOwnerId` resolver returns `null`, to avoid leaking resource existence to non-owners).
+
+### The `version` Field
+
+Every contract record carries a `version` field:
+
+- **Type:** `integer` (non-negative)
+- **Initial value:** `0` - set automatically when a contract is created
+- **Increment:** incremented by exactly `1` on every successful update
+
+The `version` field is included in all GET and PATCH responses. Clients must echo back the `version` they last read when submitting an update; the server accepts the write only when the stored version matches, then atomically increments it.
+
+### Endpoints
+#### List Contracts
+**GET** `/api/v1/contracts`
+
+Retrieves a list of available contracts.
+
+#### Get Contract Bounds
+**GET** `/api/v1/contracts/bounds`
+
+Retrieves global statistical bounds and limits for contracts.
+
+#### Get Contract Stats
+**GET** `/api/v1/contracts/stats`
+
+Retrieves contract system statistics (e.g., total active volume, total completed volume).
+
+#### Get Contract by ID
+**GET** `/api/v1/contracts/:id`
+
+Retrieves details for a single contract by its UUID.
+
+#### Update Contract
+
+**PATCH** `/api/v1/contracts/:id`
+
+Updates an existing contract record using Optimistic Concurrency Control. The request body must include the `version` value from the most recent read of the contract. The server performs an atomic compare-and-swap: if the stored version matches the supplied version, the update is applied and the version is incremented by 1. If the versions do not match (indicating a concurrent modification), the request is rejected with a 409 conflict error.
+
+**Request Body:**
+```json
+{
+  "version": 3,
+  "title": "Updated contract title"
+}
+```
+
+**Response (200) - success:**
+```json
+{
+  "status": "success",
+  "data": {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "title": "Updated contract title",
+    "clientId": "user-uuid-1",
+    "freelancerId": "user-uuid-2",
+    "amount": 10000,
+    "status": "active",
+    "version": 4,
+    "createdAt": "2024-01-15T10:00:00.000Z"
+  }
+}
+```
+
+The `version` in the response (`4`) is exactly 1 greater than the version supplied in the request (`3`).
+
+**Response (409) - version conflict:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERR_CONFLICT",
+    "message": "Version conflict"
+  }
+}
+```
+
+Returned when the supplied `version` does not match the stored version, meaning another client has modified the contract since you last read it.
+
+**Response (400) - missing version:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERR_MISSING_VERSION",
+    "message": "version field is required for updates"
+  }
+}
+```
+
+Returned when the request body does not include a `version` field.
+
+**Response (400) - invalid version:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERR_INVALID_VERSION",
+    "message": "version must be a non-negative integer"
+  }
+}
+```
+
+Returned when `version` is present but is not a non-negative integer (e.g., a negative number, a float, a string, or `null`).
+
+#### Delete Contract
+**DELETE** `/api/v1/contracts/:id`
+
+Soft deletes a contract by ID. Requires authentication.
+
+### Client Retry Strategy
+
+When you receive a `409 ERR_CONFLICT` response, the recommended approach is:
+
+1. **Fetch the latest contract** — `GET /api/v1/contracts/:id`
+2. **Extract the current `version`** from the response body
+3. **Resubmit your update** with the new `version` value
+
+This ensures your update is applied on top of the most recent state of the contract, preventing lost updates.
+
+```bash
+# Step 1: fetch latest contract
+curl -X GET http://localhost:3001/api/v1/contracts/a1b2c3d4 \
+  -H "Authorization: Bearer demo-user-token"
+
+# Step 2: note the version in the response, e.g. "version": 5
+
+# Step 3: resubmit with the current version
+curl -X PATCH http://localhost:3001/api/v1/contracts/a1b2c3d4 \
+  -H "Authorization: Bearer demo-user-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": 5,
+    "title": "My updated title"
+  }'
+```
+
+---
 
 ## Contract Metadata API
 
@@ -185,6 +530,127 @@ Soft deletes a metadata record. The record is marked as deleted but retained in 
 **Error Responses:**
 - `401` - Authentication required
 
+## Reputation API
+Manage freelancer reviews and ratings. Registered dynamically in the OpenAPI registry. All reputation routes require a valid JWT.
+
+### Get Reputation Profile
+**GET** `/api/v1/reputation/:id`
+
+**Permissions**: Requires `reviews.read` (Admin, Client, Freelancer).
+
+Retrieves aggregated scores, total ratings, and a list of reviews for the specific freelancer.
+
+### Submit a Reputation Review
+**PUT** `/api/v1/reputation/:id`
+
+(*Also aliased via **POST*** `/api/v1/reputation/:id/rate`)
+
+**Permissions**: Requires `reviews.create`.
+
+Submits a new rating and comment. Duplicate ratings from the same user or self-ratings will trigger a `409 Conflict` or `403 Forbidden` response utilizing the standard Error Envelope.
+
+Request Body:
+
+```JSON
+{
+  "reviewerId": "123e4567-e89b-12d3-a456-426614174000",
+  "rating": 5,
+  "comment": "Excellent freelancer!"
+}
+```
+
+## Jobs DLQ API
+
+### Overview
+
+Dead-letter queue (DLQ) endpoints allow administrators to inspect failed jobs and trigger controlled replays.
+These endpoints are protected and audited.
+
+### Authorization
+
+- Requires `Authorization: Bearer <token>`
+- Only `demo-admin-token` (or admin users in production auth) can access these routes
+- Non-admin users receive `403 Admin role required`
+
+### List DLQ Entries
+
+**GET** `/jobs/dlq`
+
+Optional query parameters:
+- `type` - job type (`email-notification`, `contract-processing`, `reputation-update`, `blockchain-sync`)
+- `limit` - number of items (default: 50, max: 100)
+- `offset` - pagination offset (default: 0)
+
+**Response (200):**
+```json
+{
+  "entries": [
+    {
+      "jobId": "123",
+      "jobType": "email-notification",
+      "name": "email-notification",
+      "data": {
+        "to": "user@example.com",
+        "subject": "Welcome",
+        "body": "..."
+      },
+      "failedReason": "Invalid email address",
+      "attemptsMade": 1,
+      "finishedOn": 1713786060000,
+      "timestamp": 1713786059000,
+      "replayDeduplicationKey": "replay:email-notification:123"
+    }
+  ],
+  "limit": 50,
+  "offset": 0,
+  "count": 1
+}
+```
+
+### Reprocess a Failed Job
+
+**POST** `/jobs/dlq/reprocess`
+
+**Request Body:**
+```json
+{
+  "type": "email-notification",
+  "jobId": "123",
+  "reason": "Retry after dependency incident resolved"
+}
+```
+
+Rules:
+- `reason` is required and must be at least 5 characters
+- Replay is idempotent via deterministic dedupe key: `replay:<type>:<originalJobId>`
+
+**Response (202):** replay enqueued
+```json
+{
+  "replayJobId": "replay:email-notification:123",
+  "deduplicated": false,
+  "originalJobId": "123",
+  "jobType": "email-notification"
+}
+```
+
+**Response (200):** replay already exists (deduped)
+```json
+{
+  "replayJobId": "replay:email-notification:123",
+  "deduplicated": true,
+  "originalJobId": "123",
+  "jobType": "email-notification"
+}
+```
+
+**Error Responses:**
+- `400` - invalid type or missing fields
+- `401` - authentication required
+- `403` - admin role required
+- `404` - failed job not found
+- `409` - job is not in failed state
+
 ## Sensitive Data Protection
 
 Metadata marked as `is_sensitive: true` is automatically masked for unauthorized users:
@@ -292,15 +758,35 @@ curl -X DELETE http://localhost:3001/api/v1/contracts/123/metadata/456 \
 
 ## Health Check
 
-**GET** `/health`
+**GET** `/health/live`
 
-Returns the health status of the API service.
+Returns process liveness only. This endpoint should stay up even while dependencies are degraded.
 
 **Response (200):**
 ```json
 {
   "status": "ok",
-  "service": "talenttrust-backend"
+  "service": "talenttrust-backend",
+  "probe": "live"
+}
+```
+
+**GET** `/health/ready`
+
+Returns readiness for traffic. It checks SQLite, the Soroban RPC endpoint, and the queue/Redis dependency with bounded timeouts and returns `503` when any dependency is unavailable.
+
+**Response (200):**
+```json
+{
+  "status": "ready",
+  "service": "talenttrust-backend",
+  "probe": "ready",
+  "activeColor": "blue",
+  "checks": [
+    { "name": "db", "ok": true, "latencyMs": 1 },
+    { "name": "stellar-rpc", "ok": true, "latencyMs": 2 },
+    { "name": "queue", "ok": true, "latencyMs": 3 }
+  ]
 }
 ```
 

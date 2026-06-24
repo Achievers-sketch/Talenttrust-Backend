@@ -2,7 +2,7 @@ import type { Action, Permission, Resource, Role, User } from "./types";
 
 // ─── Role allowlist ───────────────────────────────────────────────────────────
 
-const ALL_ROLES: ReadonlySet<string> = new Set<Role>(["admin", "client", "freelancer"]);
+const ALL_ROLES: ReadonlySet<string> = new Set<Role>(["admin", "auditor", "client", "freelancer"]);
 
 /**
  * Type-guard / validator for role claim values coming out of a JWT.
@@ -26,16 +26,7 @@ export function isValidRole(value: unknown): value is Role {
  *  - freelancer can propose on jobs, manage their own proposals/contracts.
  *  - Reviews are readable by all roles but writable only by their author.
  */
-export const PERMISSION_MATRIX: readonly Permission[] = [
-  // ── admin (full access, no ownOnly restrictions) ──────────────────────────
-  ...(
-    ["users", "jobs", "proposals", "contracts", "payments", "reviews", "reports", "settings"] as Resource[]
-  ).flatMap((resource) =>
-    (["create", "read", "update", "delete", "list"] as Action[]).map(
-      (action): Permission => ({ role: "admin", resource, action })
-    )
-  ),
-
+const CLIENT_MATRIX: readonly Permission[] = [
   // ── client ────────────────────────────────────────────────────────────────
   { role: "client", resource: "jobs",      action: "create"                 },
   { role: "client", resource: "jobs",      action: "read"                   },
@@ -57,7 +48,9 @@ export const PERMISSION_MATRIX: readonly Permission[] = [
   { role: "client", resource: "reviews",   action: "list"                   },
   { role: "client", resource: "settings",  action: "read",   ownOnly: true  },
   { role: "client", resource: "settings",  action: "update", ownOnly: true  },
+];
 
+const FREELANCER_MATRIX: readonly Permission[] = [
   // ── freelancer ────────────────────────────────────────────────────────────
   { role: "freelancer", resource: "jobs",      action: "read"                   },
   { role: "freelancer", resource: "jobs",      action: "list"                   },
@@ -77,7 +70,17 @@ export const PERMISSION_MATRIX: readonly Permission[] = [
   { role: "freelancer", resource: "reviews",   action: "list"                   },
   { role: "freelancer", resource: "settings",  action: "read",   ownOnly: true  },
   { role: "freelancer", resource: "settings",  action: "update", ownOnly: true  },
-] as const;
+];
+
+const ADMIN_MATRIX: readonly Permission[] = (
+  ["users", "jobs", "proposals", "contracts", "payments", "reviews", "reports", "settings"] as Resource[]
+).flatMap((resource) =>
+  (["create", "read", "update", "delete", "list"] as Action[]).map(
+    (action): Permission => ({ role: "admin", resource, action })
+  )
+);
+
+export const PERMISSION_MATRIX: readonly Permission[] = ADMIN_MATRIX.concat(CLIENT_MATRIX).concat(FREELANCER_MATRIX);
 
 // ─── isAuthorized ─────────────────────────────────────────────────────────────
 
@@ -122,6 +125,7 @@ export function isAuthorized({
   );
 
   if (!entry) {
+    console.log('Client matrix items in Jest:', JSON.stringify(PERMISSION_MATRIX.filter(p => p.role === 'client')));
     return { granted: false, reason: `Role '${user.role}' may not '${action}' '${resource}'.` };
   }
 

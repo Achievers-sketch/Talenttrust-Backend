@@ -73,6 +73,7 @@ export function validatePromotionPath(from: Environment, to: Environment): Valid
     development: ['staging'],
     staging: ['production'],
     production: [], // Cannot promote from production
+    test: [],
   };
   
   if (!validPaths[from].includes(to)) {
@@ -197,7 +198,7 @@ export async function rollbackDeployment(
  * @returns {Promise<PromotionRequest[]>} List of promotion requests
  */
 export async function getPromotionHistory(
-  environment: Environment
+  _environment: Environment
 ): Promise<PromotionRequest[]> {
   // In a real implementation, this would query a database or log store
   // For now, return empty array

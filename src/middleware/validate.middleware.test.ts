@@ -16,6 +16,7 @@ describe('Validate Middleware', () => {
     mockResponse = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn(),
+      locals: {},
     };
     mockNext = jest.fn();
   });
@@ -45,10 +46,22 @@ describe('Validate Middleware', () => {
     await middleware(mockRequest as Request, mockResponse as Response, mockNext);
 
     expect(mockResponse.status).toHaveBeenCalledWith(400);
-    expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'error',
-      message: 'Validation failed',
-    }));
+    expect(mockResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: 'validation_error',
+          message: 'Request validation failed',
+          requestId: 'unknown',
+          details: expect.arrayContaining([
+            expect.objectContaining({
+              path: expect.any(Array),
+              message: expect.any(String),
+              code: expect.any(String),
+            }),
+          ]),
+        }),
+      }),
+    );
   });
 
   it('should pass non-Zod errors to next()', async () => {

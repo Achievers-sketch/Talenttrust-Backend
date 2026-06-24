@@ -25,7 +25,7 @@ export class EscrowHooks {
    * @param payload The context details of the escrow event.
    */
   public static async onEscrowEvent(event: KeyEscrowEvent, payload: EscrowEventPayload): Promise<void> {
-    const { userEmail, userId, contractId } = payload;
+    const { userEmail, userId } = payload;
     
     // In terms of performance, Promise.all runs these asynchronously without blocking each other.
     await Promise.all([

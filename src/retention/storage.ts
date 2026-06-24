@@ -7,7 +7,7 @@
  * @module retention/storage
  */
 
-import { RetainedData, DataEntityType, DataClassification, ArchivalStorageType } from './types';
+import { RetainedData, ArchivalStorageType } from './types';
 
 /**
  * Abstract storage provider interface
@@ -209,11 +209,10 @@ export class StorageManager {
 
   /**
    * Get provider for storage type
-   * @private
    * @param {ArchivalStorageType} storageType - Storage type
    * @returns {IStorageProvider}
    */
-  private getProvider(storageType: ArchivalStorageType): IStorageProvider {
+  public getProvider(storageType: ArchivalStorageType): IStorageProvider {
     switch (storageType) {
       case ArchivalStorageType.COLD_STORAGE:
       case ArchivalStorageType.ENCRYPTED_ARCHIVE:
