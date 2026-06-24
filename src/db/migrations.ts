@@ -64,6 +64,7 @@ const MIGRATIONS: Migration[] = [
         );
       }
     },
+  },
   {
     version: 3,
     name: "create_notifications_table",
@@ -81,7 +82,6 @@ const MIGRATIONS: Migration[] = [
           ON notifications(user_id);
       `);
     },
-  },
   },
 ];
 
