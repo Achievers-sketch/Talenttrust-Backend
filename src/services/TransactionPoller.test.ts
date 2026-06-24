@@ -1,5 +1,9 @@
 import { TransactionPoller, IBlockchainProvider } from './TransactionPoller';
 import { Transaction, TransactionStatus, transactionsDb } from '../models/Transaction';
+import { closeDb } from '../db/database';
+
+// Run against in-memory DB for tests
+process.env.DB_PATH = ':memory:';
 
 /**
  * Minimal blockchain receipt shape used by {@link TransactionPoller}.
@@ -48,11 +52,13 @@ async function runNextBackoffTick(): Promise<void> {
 }
 
 /**
- * Computes the expected backoff delay for a given retry count using the poller formula:
- * `initialDelay * 2^(retryCount - 1)`.
+ * Computes the expected backoff delay with jitter (mocked Math.random() = 0.5)
+ * for a given retry count using the poller formula:
+ * `initialDelay * 2^(retryCount - 1) * 0.75`.
  */
 function expectedBackoffDelay(initialDelay: number, retryCount: number): number {
-  return initialDelay * Math.pow(2, retryCount - 1);
+  const exponential = initialDelay * Math.pow(2, retryCount - 1);
+  return exponential * 0.75; // Because Math.random() is mocked to 0.5
 }
 
 /**
@@ -80,8 +86,17 @@ describe('TransactionPoller', () => {
   const initialDelay = 100;
   const maxRetries = 3;
 
+  beforeAll(() => {
+    process.env.DB_PATH = ':memory:';
+  });
+
+  afterAll(() => {
+    closeDb();
+  });
+
   beforeEach(() => {
     jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0.5); // Jitter multiplier becomes 0.75
     transactionsDb.clear();
     mockProvider = createMockProvider();
     poller = new TransactionPoller(mockProvider, maxRetries, initialDelay);
@@ -101,9 +116,6 @@ describe('TransactionPoller', () => {
   });
 
   describe('transaction registration', () => {
-    /**
-     * Transition: (missing) → PENDING on first `poll` call.
-     */
     it('creates a PENDING transaction when the hash is not yet tracked', async () => {
       const txHash = '0xnew';
       mockProvider.getTransactionReceipt.mockResolvedValue({ status: 1, transactionHash: txHash });
@@ -116,9 +128,6 @@ describe('TransactionPoller', () => {
       expect(stored?.retryCount).toBe(0);
     });
 
-    /**
-     * Transition: preserves existing retryCount when re-polling a known hash.
-     */
     it('reuses an existing transaction record instead of resetting state', async () => {
       const txHash = '0xexisting';
       seedTransaction(txHash, { retryCount: 2 });
@@ -132,9 +141,6 @@ describe('TransactionPoller', () => {
   });
 
   describe('receipt-driven status transitions', () => {
-    /**
-     * Transition: PENDING → SUCCESS when receipt.status === 1.
-     */
     it('sets SUCCESS and stores the receipt when the chain reports status 1', async () => {
       const txHash = '0xsuccess';
       const receipt: MockReceipt = { status: 1, transactionHash: txHash };
@@ -150,9 +156,6 @@ describe('TransactionPoller', () => {
       expect(mockProvider.getTransactionReceipt).toHaveBeenCalledWith(txHash);
     });
 
-    /**
-     * Transition: PENDING → FAILED when receipt.status === 0 (reverted).
-     */
     it('sets FAILED and stores the receipt when the chain reports status 0', async () => {
       const txHash = '0xreverted';
       const receipt: MockReceipt = { status: 0, transactionHash: txHash };
@@ -167,9 +170,6 @@ describe('TransactionPoller', () => {
       expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
     });
 
-    /**
-     * Transition: PENDING → SUCCESS after multiple null receipts (not yet mined).
-     */
     it('keeps polling through null receipts until a final receipt arrives', async () => {
       const txHash = '0xpending-then-success';
       mockProvider.getTransactionReceipt
@@ -195,9 +195,6 @@ describe('TransactionPoller', () => {
   });
 
   describe('RPC error resilience', () => {
-    /**
-     * Transition: PENDING (unchanged) on RPC throw; logs warning and retries after backoff.
-     */
     it('logs a warning, increments retryCount, and continues polling after an RPC error', async () => {
       const txHash = '0xrpc-error';
       const rpcError = new Error('RPC unavailable');
@@ -225,11 +222,8 @@ describe('TransactionPoller', () => {
     });
   });
 
-  describe('exponential backoff schedule', () => {
-    /**
-     * Asserts each scheduled delay matches `initialDelay * 2^(retryCount - 1)`.
-     */
-    it('schedules delays using initialDelay * 2^(retryCount - 1)', async () => {
+  describe('exponential backoff schedule with full jitter', () => {
+    it('schedules delays using full-jitter bounds', async () => {
       const txHash = '0xbackoff-formula';
       mockProvider.getTransactionReceipt.mockResolvedValue(null);
 
@@ -255,23 +249,16 @@ describe('TransactionPoller', () => {
       const thirdScheduledDelay = setTimeoutSpy.mock.calls.at(-1)?.[1];
       expect(thirdScheduledDelay).toBe(expectedBackoffDelay(initialDelay, 3));
 
-      // Stop further polling so the open promise can settle.
+      // Stop further polling
       const tx = transactionsDb.get(txHash);
       if (tx) {
         tx.status = TransactionStatus.SUCCESS;
+        transactionsDb.set(txHash, tx);
       }
       jest.runAllTimers();
       await pollPromise;
-
-      expect(expectedBackoffDelay(100, 1)).toBe(100);
-      expect(expectedBackoffDelay(100, 2)).toBe(200);
-      expect(expectedBackoffDelay(100, 3)).toBe(400);
-      expect(expectedBackoffDelay(100, 4)).toBe(800);
     });
 
-    /**
-     * Verifies polling attempts occur only after each computed backoff interval elapses.
-     */
     it('does not invoke the provider again until the backoff interval passes', async () => {
       const txHash = '0xbackoff-timing';
       mockProvider.getTransactionReceipt.mockResolvedValue(null);
@@ -280,8 +267,8 @@ describe('TransactionPoller', () => {
       await flushMicrotasks();
       expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
 
-      // Less than the first backoff (100ms) — no second RPC call yet.
-      await advanceTimersAndFlush(99);
+      const delay = expectedBackoffDelay(initialDelay, 1);
+      await advanceTimersAndFlush(delay - 1);
       expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
 
       // Complete the first backoff window.
@@ -291,6 +278,7 @@ describe('TransactionPoller', () => {
       const tx = transactionsDb.get(txHash);
       if (tx) {
         tx.status = TransactionStatus.SUCCESS;
+        transactionsDb.set(txHash, tx);
       }
       jest.runAllTimers();
       await pollPromise;
@@ -298,28 +286,25 @@ describe('TransactionPoller', () => {
   });
 
   describe('TIMEOUT transition', () => {
-    /**
-     * Transition: PENDING → TIMEOUT once retryCount reaches maxRetries without finality.
-     */
     it('sets TIMEOUT after maxRetries exhausted with persistently null receipts', async () => {
       const txHash = '0xtimeout';
       mockProvider.getTransactionReceipt.mockResolvedValue(null);
 
       const pollPromise = poller.poll(txHash);
 
-      // Attempt 1: retryCount 0 → 1, delay 100ms
+      // Attempt 1: retryCount 0 → 1
       await flushMicrotasks();
       expect(transactionsDb.get(txHash)?.retryCount).toBe(1);
 
-      // Attempt 2: retryCount 1 → 2, delay 200ms
+      // Attempt 2: retryCount 1 → 2
       await advanceTimersAndFlush(expectedBackoffDelay(initialDelay, 1));
       expect(transactionsDb.get(txHash)?.retryCount).toBe(2);
 
-      // Attempt 3: retryCount 2 → 3, delay 400ms
+      // Attempt 3: retryCount 2 → 3
       await advanceTimersAndFlush(expectedBackoffDelay(initialDelay, 2));
       expect(transactionsDb.get(txHash)?.retryCount).toBe(3);
 
-      // Attempt 4: retryCount >= maxRetries → TIMEOUT (no further RPC call)
+      // Attempt 4: retryCount >= maxRetries → TIMEOUT
       await advanceTimersAndFlush(expectedBackoffDelay(initialDelay, 3));
 
       const stored = transactionsDb.get(txHash);
@@ -332,9 +317,6 @@ describe('TransactionPoller', () => {
   });
 
   describe('early termination when status is no longer PENDING', () => {
-    /**
-     * Transition: external SUCCESS while polling → poller stops without further RPC calls.
-     */
     it('returns early when status is changed externally to a non-PENDING value', async () => {
       const txHash = '0xexternal-success';
       mockProvider.getTransactionReceipt.mockResolvedValue(null);
@@ -346,6 +328,7 @@ describe('TransactionPoller', () => {
       const tx = transactionsDb.get(txHash);
       expect(tx).toBeDefined();
       tx!.status = TransactionStatus.SUCCESS;
+      transactionsDb.set(txHash, tx!);
 
       await advanceTimersAndFlush(expectedBackoffDelay(initialDelay, 1));
       expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
@@ -353,9 +336,6 @@ describe('TransactionPoller', () => {
       await pollPromise;
     });
 
-    /**
-     * Transition: external FAILED while polling → poller stops without further RPC calls.
-     */
     it('returns early when status is changed externally to FAILED', async () => {
       const txHash = '0xexternal-failed';
       mockProvider.getTransactionReceipt.mockResolvedValue(null);
@@ -366,6 +346,7 @@ describe('TransactionPoller', () => {
       const tx = transactionsDb.get(txHash);
       expect(tx).toBeDefined();
       tx!.status = TransactionStatus.FAILED;
+      transactionsDb.set(txHash, tx!);
 
       await advanceTimersAndFlush(expectedBackoffDelay(initialDelay, 1));
       expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
@@ -373,9 +354,6 @@ describe('TransactionPoller', () => {
       await pollPromise;
     });
 
-    /**
-     * Transition: transaction removed from store → poller stops without further RPC calls.
-     */
     it('returns early when the transaction record is deleted externally', async () => {
       const txHash = '0xdeleted';
       mockProvider.getTransactionReceipt.mockResolvedValue(null);
@@ -392,9 +370,6 @@ describe('TransactionPoller', () => {
       await pollPromise;
     });
 
-    /**
-     * Transition: already non-PENDING at poll start → no RPC calls made.
-     */
     it('does not poll when the transaction is already in a terminal state', async () => {
       const txHash = '0xalready-done';
       seedTransaction(txHash, { status: TransactionStatus.SUCCESS });
@@ -405,10 +380,25 @@ describe('TransactionPoller', () => {
     });
   });
 
+  describe('recovery routine', () => {
+    it('re-enqueues polling for all PENDING transactions', async () => {
+      seedTransaction('0xpending1');
+      seedTransaction('0xpending2');
+      seedTransaction('0xsuccess1', { status: TransactionStatus.SUCCESS });
+      
+      mockProvider.getTransactionReceipt.mockResolvedValue({ status: 1, transactionHash: 'hash' });
+      
+      await poller.recoverPendingTransactions();
+      
+      await flushMicrotasks();
+      
+      expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(2);
+      expect(mockProvider.getTransactionReceipt).toHaveBeenCalledWith('0xpending1');
+      expect(mockProvider.getTransactionReceipt).toHaveBeenCalledWith('0xpending2');
+    });
+  });
+
   describe('orchestrator error handling', () => {
-    /**
-     * Transition: fatal error in pollWithBackoff → caught by `poll`, logged, no unhandled rejection.
-     */
     it('catches fatal pollWithBackoff errors and logs them without rejecting poll()', async () => {
       const txHash = '0xfatal';
       seedTransaction(txHash);

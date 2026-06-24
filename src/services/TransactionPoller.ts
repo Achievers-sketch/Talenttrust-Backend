@@ -1,4 +1,5 @@
 import { TransactionStatus, transactionsDb } from '../models/Transaction';
+import { calculateDelay } from '../utils/retry';
 
 /**
  * Blockchain provider abstraction to decouple polling logic from specific web3/ethers implementations.
@@ -52,6 +53,23 @@ export class TransactionPoller {
   }
 
   /**
+   * Recovers and resumes polling for any transactions left in a PENDING state
+   * (e.g., after an application restart).
+   */
+  public async recoverPendingTransactions(): Promise<void> {
+    const pendingTransactions = Array.from(transactionsDb.values()).filter(
+      tx => tx.status === TransactionStatus.PENDING
+    );
+
+    for (const tx of pendingTransactions) {
+      // Re-enqueue the polling process in the background.
+      this.pollWithBackoff(tx.hash).catch(error => {
+        console.error(`Recovery polling failed for ${tx.hash}:`, error);
+      });
+    }
+  }
+
+  /**
    * Recursive implementation of exponential backoff polling.
    * Balances the need for low-latency confirmation against API rate limits.
    */
@@ -67,6 +85,7 @@ export class TransactionPoller {
     if (transaction.retryCount >= this.maxRetries) {
       transaction.status = TransactionStatus.TIMEOUT;
       transaction.lastCheckedAt = new Date();
+      transactionsDb.set(txHash, transaction);
       return;
     }
 
@@ -78,6 +97,7 @@ export class TransactionPoller {
         transaction.status = receipt.status === 1 ? TransactionStatus.SUCCESS : TransactionStatus.FAILED;
         transaction.receipt = receipt;
         transaction.lastCheckedAt = new Date();
+        transactionsDb.set(txHash, transaction);
         return;
       }
     } catch (error) {
@@ -87,13 +107,12 @@ export class TransactionPoller {
 
     transaction.retryCount++;
     transaction.lastCheckedAt = new Date();
+    transactionsDb.set(txHash, transaction);
 
-    const delay = this.initialDelay * Math.pow(2, transaction.retryCount - 1);
+    const delay = calculateDelay(transaction.retryCount - 1, this.initialDelay, Infinity, true);
     
     // Enforce backoff delay using the event loop to avoid blocking resources
     await new Promise(resolve => setTimeout(resolve, delay));
     return this.pollWithBackoff(txHash);
   }
-
-
 }
