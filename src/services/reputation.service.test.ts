@@ -7,9 +7,10 @@
  * - Input validation
  * - Audit logging
  * - Profile aggregation
+ * - Weighted reputation scoring algorithm
  */
 
-import { ReputationService } from './reputation.service';
+import { ReputationService, computeWeightedReputationScore } from './reputation.service';
 import { getDb, closeDb } from '../db/database';
 import Database from 'better-sqlite3';
 import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
@@ -418,6 +419,246 @@ describe('ReputationService', () => {
       expect(profile.totalRatings).toBe(0);
       expect(profile.score).toBe(0);
       expect(profile.reviews).toEqual([]);
+    });
+  });
+
+  describe('computeWeightedReputationScore - Pure Function Tests', () => {
+    const now = new Date('2024-01-15T00:00:00.000Z');
+    const lambda = 0.005;
+
+    it('should return 0 for empty ratings array', () => {
+      const result = computeWeightedReputationScore([], now, lambda);
+      expect(result).toBe(0);
+    });
+
+    it('should return rating value for single rating at exactly now', () => {
+      const ratings = [
+        { rating: 4, createdAt: '2024-01-15T00:00:00.000Z' }
+      ];
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      expect(result).toBe(4);
+    });
+
+    it('should return rating value for single old rating (weight cancels out)', () => {
+      const ratings = [
+        { rating: 3, createdAt: '2023-01-15T00:00:00.000Z' } // 365 days old
+      ];
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      expect(result).toBe(3);
+    });
+
+    it('should return common value for two equal ratings with different ages', () => {
+      const ratings = [
+        { rating: 4, createdAt: '2024-01-15T00:00:00.000Z' }, // today
+        { rating: 4, createdAt: '2023-01-15T00:00:00.000Z' }  // 365 days old
+      ];
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      expect(result).toBe(4);
+    });
+
+    it('should bias upward when newer rating is higher', () => {
+      const ratings = [
+        { rating: 5, createdAt: '2024-01-15T00:00:00.000Z' }, // today, high
+        { rating: 1, createdAt: '2023-01-15T00:00:00.000Z' }  // 365 days old, low
+      ];
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      const simpleMean = 3.0;
+      expect(result).toBeGreaterThan(simpleMean);
+      expect(result).toBeLessThanOrEqual(5.0);
+    });
+
+    it('should bias downward when newer rating is lower', () => {
+      const ratings = [
+        { rating: 1, createdAt: '2024-01-15T00:00:00.000Z' }, // today, low
+        { rating: 5, createdAt: '2023-01-15T00:00:00.000Z' }  // 365 days old, high
+      ];
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      const simpleMean = 3.0;
+      expect(result).toBeLessThan(simpleMean);
+      expect(result).toBeGreaterThanOrEqual(1.0);
+    });
+
+    it('should keep score within rating range for all old ratings', () => {
+      const ratings = [
+        { rating: 5, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 1, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 3, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 4, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 2, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 5, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 3, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 4, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 2, createdAt: '2023-01-15T00:00:00.000Z' },
+        { rating: 1, createdAt: '2023-01-15T00:00:00.000Z' },
+      ];
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      const values = ratings.map(r => r.rating);
+      const minRating = Math.min(...values);
+      const maxRating = Math.max(...values);
+      expect(result).toBeGreaterThanOrEqual(minRating);
+      expect(result).toBeLessThanOrEqual(maxRating);
+    });
+
+    it('should keep score within rating range for mixed recency', () => {
+      const ratings = [
+        { rating: 5, createdAt: '2024-01-15T00:00:00.000Z' },   // 0 days
+        { rating: 4, createdAt: '2024-01-05T00:00:00.000Z' },   // 10 days
+        { rating: 3, createdAt: '2023-12-15T00:00:00.000Z' },  // ~31 days
+        { rating: 2, createdAt: '2023-09-15T00:00:00.000Z' },  // ~122 days
+        { rating: 1, createdAt: '2022-07-15T00:00:00.000Z' },  // ~549 days
+      ];
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      expect(result).toBeGreaterThanOrEqual(1);
+      expect(result).toBeLessThanOrEqual(5);
+    });
+
+    it('should decay faster with higher lambda', () => {
+      const ratings = [
+        { rating: 5, createdAt: '2024-01-15T00:00:00.000Z' },  // today, high
+        { rating: 1, createdAt: '2023-01-15T00:00:00.000Z' }   // 365 days old, low
+      ];
+      
+      const lowLambda = 0.001;
+      const highLambda = 0.1;
+      
+      const resultLowLambda = computeWeightedReputationScore(ratings, now, lowLambda);
+      const resultHighLambda = computeWeightedReputationScore(ratings, now, highLambda);
+      
+      // With higher lambda, old ratings decay more, so score should be closer to the recent high rating (5)
+      expect(resultHighLambda).toBeGreaterThan(resultLowLambda);
+    });
+
+    it('should return identical results for identical inputs (deterministic)', () => {
+      const ratings = [
+        { rating: 4, createdAt: '2024-01-10T00:00:00.000Z' },
+        { rating: 3, createdAt: '2023-12-01T00:00:00.000Z' },
+      ];
+      
+      const result1 = computeWeightedReputationScore(ratings, now, lambda);
+      const result2 = computeWeightedReputationScore(ratings, now, lambda);
+      
+      expect(result1).toBe(result2);
+    });
+
+    it('should handle future createdAt defensively (clock skew)', () => {
+      const ratings = [
+        { rating: 4, createdAt: '2024-01-16T00:00:00.000Z' } // 1 day in future
+      ];
+      
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      
+      // Should not throw and should return the rating value (age clamped to 0, weight = 1)
+      expect(result).toBe(4);
+    });
+
+    it('should return exact rating value for single rating with age = 0', () => {
+      const ratings = [
+        { rating: 3.5, createdAt: '2024-01-15T00:00:00.000Z' }
+      ];
+      
+      const result = computeWeightedReputationScore(ratings, now, lambda);
+      
+      // weight = exp(0) = 1, so result = 3.5 * 1 / 1 = 3.5
+      expect(result).toBe(3.5);
+    });
+  });
+
+  describe('getProfile - Weighted Score Integration', () => {
+    it('should return weightedScore field', () => {
+      const uniqueContext = 'context-weighted-1';
+      db.exec(`
+        INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
+        VALUES ('${uniqueContext}', 'Test', '${reviewerId}', '${targetId}', 1100, 'completed', 0, datetime('now'));
+      `);
+
+      ReputationService.createRating(reviewerId, targetId, 5, uniqueContext);
+
+      const profile = ReputationService.getProfile(targetId);
+
+      expect(profile.weightedScore).toBeDefined();
+      expect(typeof profile.weightedScore).toBe('number');
+      expect(profile.weightedScore).toBeGreaterThanOrEqual(0);
+      expect(profile.weightedScore).toBeLessThanOrEqual(5);
+    });
+
+    it('should return scoreAlgorithm field', () => {
+      const uniqueContext = 'context-weighted-2';
+      db.exec(`
+        INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
+        VALUES ('${uniqueContext}', 'Test', '${reviewerId}', '${targetId}', 1200, 'completed', 0, datetime('now'));
+      `);
+
+      ReputationService.createRating(reviewerId, targetId, 4, uniqueContext);
+
+      const profile = ReputationService.getProfile(targetId);
+
+      expect(profile.scoreAlgorithm).toBeDefined();
+      expect(typeof profile.scoreAlgorithm).toBe('string');
+      expect(profile.scoreAlgorithm).toBe('exp-decay-v1');
+    });
+
+    it('should preserve all existing fields in profile', () => {
+      const uniqueContext = 'context-weighted-3';
+      db.exec(`
+        INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
+        VALUES ('${uniqueContext}', 'Test', '${reviewerId}', '${targetId}', 1300, 'completed', 0, datetime('now'));
+      `);
+
+      ReputationService.createRating(reviewerId, targetId, 5, uniqueContext, 'Excellent');
+
+      const profile = ReputationService.getProfile(targetId);
+
+      // Verify all existing fields are still present
+      expect(profile.freelancerId).toBeDefined();
+      expect(profile.score).toBeDefined();
+      expect(profile.jobsCompleted).toBeDefined();
+      expect(profile.totalRatings).toBeDefined();
+      expect(profile.reviews).toBeDefined();
+      expect(profile.lastUpdated).toBeDefined();
+      
+      // Verify arithmetic mean is unchanged
+      expect(profile.totalRatings).toBe(1);
+      expect(profile.score).toBe(5);
+    });
+
+    it('should return weightedScore = 0 for zero ratings', () => {
+      const profile = ReputationService.getProfile('no-ratings-user-weighted');
+
+      expect(profile.weightedScore).toBe(0);
+      expect(profile.totalRatings).toBe(0);
+    });
+
+    it('should bias weightedScore toward recent ratings', () => {
+      const uniqueContext1 = 'context-weighted-old';
+      const uniqueContext2 = 'context-weighted-new';
+      
+      // Create contracts
+      db.exec(`
+        INSERT INTO contracts 
+        (id, title, client_id, freelancer_id, amount, status, version, created_at)
+        VALUES 
+          ('${uniqueContext1}', 'Old Contract', '${reviewerId}', '${targetId}', 1400, 'completed', 0, datetime('now', '-365 days')),
+          ('${uniqueContext2}', 'New Contract', '${reviewerId}', '${targetId}', 1500, 'completed', 0, datetime('now'));
+      `);
+
+      // Insert old low rating manually with old createdAt
+      db.exec(`
+        INSERT INTO reputation_entries (id, reviewer_id, target_id, rating, comment, context_id, created_at)
+        VALUES ('old-rating-id', '${reviewerId}', '${targetId}', 1, 'Old rating', '${uniqueContext1}', datetime('now', '-365 days'));
+      `);
+
+      // Insert recent high rating
+      ReputationService.createRating(reviewerId, targetId, 5, uniqueContext2, 'Recent rating');
+
+      const profile = ReputationService.getProfile(targetId);
+
+      // Arithmetic mean should be (1 + 5) / 2 = 3.0
+      expect(profile.score).toBe(3.0);
+      expect(profile.totalRatings).toBe(2);
+      
+      // Weighted score should be > 3.0 because recent rating (5) has more weight
+      expect(profile.weightedScore).toBeGreaterThan(3.0);
+      expect(profile.weightedScore).toBeLessThanOrEqual(5.0);
     });
   });
 });
