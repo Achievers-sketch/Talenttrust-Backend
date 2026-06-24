@@ -1,9 +1,16 @@
 
 import axios from 'axios';
+import { URL } from 'url';
 import { createWebhookSignature } from '../utils/webhook-signing.util';
 import { getWebhookDLQStorage, WebhookDLQEntry } from '../queue/webhook-dlq';
 import { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from '../queue/webhook-retry-policy';
-import { MetricsServiceLike } from '../observability';
+import { isSafeUrl } from '../utils/ssrf';
+import { RateLimitStore } from '../lib/rateLimitStore';
+
+/** Max deliveries per destination host per window. Default: 60. */
+const HOST_RATE_LIMIT_MAX = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_MAX ?? 60);
+/** Window length in ms for per-host rate limiting. Default: 60 000 ms. */
+const HOST_RATE_LIMIT_WINDOW_MS = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_WINDOW_MS ?? 60_000);
 
 export interface WebhookPayload {
   id: string;
@@ -17,11 +24,47 @@ export interface WebhookPayload {
 
 export class WebhookService {
   private dlqStorage = getWebhookDLQStorage();
+  /** Per-host sliding-window rate limit store (shared across all instances). */
+  private static hostRateStore = new RateLimitStore({ sweepIntervalMs: HOST_RATE_LIMIT_WINDOW_MS });
+
+  /**
+   * Applies a per-host sliding-window rate limit.
+   *
+   * @param hostname - The destination hostname extracted from the webhook URL.
+   * @returns `true` if the request is allowed, `false` if the limit is exceeded.
+   *
+   * @remarks
+   * Uses the same sliding-window algorithm as the HTTP rate-limit middleware.
+   * The hostname is used as the raw key and is hashed inside the store.
+   */
+  private checkHostRateLimit(hostname: string): boolean {
+    const now = Date.now();
+    const entry = WebhookService.hostRateStore.get(hostname) ?? {
+      count: 0,
+      windowStart: now,
+      blocked: false,
+      blockedUntil: 0,
+    };
+
+    if (now - entry.windowStart > HOST_RATE_LIMIT_WINDOW_MS) {
+      entry.count = 0;
+      entry.windowStart = now;
+    }
+
+    entry.count += 1;
+    WebhookService.hostRateStore.set(hostname, entry);
+
+    return entry.count <= HOST_RATE_LIMIT_MAX;
+  }
 
   constructor(private readonly metrics?: MetricsServiceLike) {}
 
   /**
    * Sends a webhook payload with iterative bounded retry and DLQ fallback.
+   *
+   * Before each attempt the destination URL is re-validated with `isSafeUrl`
+   * (SSRF guard) and a per-host sliding-window rate limit is applied.  Either
+   * check failing causes an immediate DLQ enqueue without further retries.
    *
    * @remarks
    * Uses a bounded for-loop so no call stack growth occurs across retries.
@@ -34,6 +77,19 @@ export class WebhookService {
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // ── SSRF re-check ────────────────────────────────────────────────────
+      if (!isSafeUrl(payload.url)) {
+        await this.persistToDLQ(payload, 'SSRF_BLOCKED: destination URL is private or invalid');
+        return;
+      }
+
+      // ── Per-host rate limit ──────────────────────────────────────────────
+      const hostname = new URL(payload.url).hostname;
+      if (!this.checkHostRateLimit(hostname)) {
+        await this.persistToDLQ(payload, `RATE_LIMITED: host ${hostname} exceeded delivery limit`);
+        return;
+      }
+
       try {
         const headers: Record<string, string> = {
           'Content-Type': 'application/json',

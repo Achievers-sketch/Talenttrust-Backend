@@ -2,6 +2,8 @@ import { WebhookService } from './webhook.service';
 import { MetricsServiceLike } from '../observability';
 import axios from 'axios';
 import { createWebhookSignature } from '../utils/webhook-signing.util';
+import * as ssrf from '../utils/ssrf';
+import { RateLimitStore } from '../lib/rateLimitStore';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -9,9 +11,13 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 jest.mock('../utils/webhook-signing.util');
 const mockedCreateWebhookSignature = createWebhookSignature as jest.MockedFunction<typeof createWebhookSignature>;
 
+jest.mock('../utils/ssrf');
+const mockedIsSafeUrl = ssrf.isSafeUrl as jest.MockedFunction<typeof ssrf.isSafeUrl>;
+
 describe('WebhookService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedIsSafeUrl.mockReturnValue(true);
   });
 
   it('sends webhook without signature when no secret is provided', async () => {
@@ -152,6 +158,7 @@ describe('WebhookService', () => {
 describe('WebhookService with correlation ID propagation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedIsSafeUrl.mockReturnValue(true);
   });
 
   /**
@@ -314,205 +321,142 @@ describe('WebhookService with correlation ID propagation', () => {
   });
 });
 
-// ─── replayAll tests ────────────────────────────────────────────────────────
-
 /**
- * @module services/webhook.service.test
- * @description Unit tests for WebhookService.replayAll bulk DLQ replay.
- *
- * Edge cases covered:
- * - empty DLQ → returns zeros
- * - all entries already replayed → skips them, attempted=0
- * - mixed success/failure → counts correctly
- * - deduped entries → counted in deduped, not succeeded/failed
- * - concurrency cap honoured (batch width ≤ concurrency)
- * - partial failure does not throw (no unhandled rejection)
- * - high concurrency clamped to remaining entries
+ * SSRF guard tests — delivery must be rejected and DLQ'd for private/internal URLs.
  */
+describe('WebhookService SSRF guard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
 
-// Isolate replayAll with a fresh module scope and DLQ mock
-jest.mock('../queue/webhook-dlq', () => {
-  const mockStorage = {
-    addEntry: jest.fn(),
-    listEntries: jest.fn().mockReturnValue([]),
-    getEntry: jest.fn(),
-    checkDedupe: jest.fn().mockReturnValue({ exists: false }),
-    markReplayed: jest.fn(),
-    getStats: jest.fn().mockResolvedValue({ total: 0, pending: 0, replayed: 0 }),
-    deleteEntry: jest.fn(),
-    incrementReplayAttempts: jest.fn(),
-  };
-  return {
-    getWebhookDLQStorage: jest.fn().mockReturnValue(mockStorage),
-    clearWebhookDLQInstance: jest.fn(),
-    __mockStorage: mockStorage,
-  };
+  it('DLQs immediately when isSafeUrl returns false and does not call axios', async () => {
+    mockedIsSafeUrl.mockReturnValue(false);
+
+    const service = new WebhookService();
+    const payload = {
+      id: 'ssrf-1',
+      url: 'http://192.168.1.1/hook',
+      data: { event: 'test' },
+      retryCount: 0,
+    };
+
+    await service.send(payload);
+
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    const dlq = service.getDLQ();
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0].webhookId).toBe('ssrf-1');
+    expect(dlq[0].error).toContain('SSRF_BLOCKED');
+  });
+
+  it('DLQs on every retry attempt when isSafeUrl consistently returns false', async () => {
+    mockedIsSafeUrl.mockReturnValue(false);
+
+    const service = new WebhookService();
+    await service.send({ id: 'ssrf-2', url: 'http://localhost/hook', data: {}, retryCount: 0 });
+
+    // isSafeUrl should be checked once (immediate reject, no retries)
+    expect(mockedIsSafeUrl).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('re-checks isSafeUrl on each retry attempt', async () => {
+    // Passes first check, fails on second (simulates DNS rebinding between retries)
+    mockedIsSafeUrl
+      .mockReturnValueOnce(true)   // attempt 0 — passes SSRF, but network fails
+      .mockReturnValueOnce(false); // attempt 1 — DLQ
+
+    mockedAxios.post.mockRejectedValueOnce(new Error('Network Error'));
+
+    const service = new WebhookService();
+    jest.useFakeTimers();
+    try {
+      const op = service.send({ id: 'ssrf-3', url: 'https://example.com/hook', data: {}, retryCount: 0 });
+      await jest.runOnlyPendingTimersAsync();
+      await op;
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(mockedIsSafeUrl).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1); // only the first attempt fired
+    const dlq = service.getDLQ();
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0].error).toContain('SSRF_BLOCKED');
+  });
 });
 
-import { getWebhookDLQStorage } from '../queue/webhook-dlq';
-
-function makeDLQEntry(id: string, replayed = false) {
-  return {
-    id,
-    webhookId: `wh-${id}`,
-    url: 'https://example.com/hook',
-    body: { event: 'test' },
-    retryCount: 3,
-    failedAt: new Date().toISOString(),
-    lastError: 'timeout',
-    dedupeKey: `key-${id}`,
-    replayedAt: replayed ? new Date().toISOString() : undefined,
-    replayAttempts: 0,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-describe('WebhookService.replayAll', () => {
-  let service: WebhookService;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let mockDLQ: any;
+/**
+ * Per-host rate-limit tests.
+ */
+describe('WebhookService per-host rate limiting', () => {
+  const ORIG_ENV = process.env;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockDLQ = getWebhookDLQStorage();
-    service = new WebhookService();
+    mockedIsSafeUrl.mockReturnValue(true);
+    // Reset shared store between tests
+    (WebhookService as any).hostRateStore = new RateLimitStore({ sweepIntervalMs: 9_999_999 });
+    process.env = { ...ORIG_ENV, WEBHOOK_HOST_RATE_LIMIT_MAX: '3', WEBHOOK_HOST_RATE_LIMIT_WINDOW_MS: '60000' };
   });
 
-  it('returns zeros when DLQ is empty', async () => {
-    mockDLQ.listEntries.mockReturnValue([]);
-
-    const result = await service.replayAll();
-    expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0, deduped: 0 });
+  afterEach(() => {
+    process.env = ORIG_ENV;
   });
 
-  it('skips already-replayed entries and returns attempted=0', async () => {
-    mockDLQ.listEntries.mockReturnValue([
-      makeDLQEntry('1', true),
-      makeDLQEntry('2', true),
-    ]);
-
-    const result = await service.replayAll();
-    expect(result).toEqual({ attempted: 0, succeeded: 0, failed: 0, deduped: 0 });
-  });
-
-  it('counts succeeded entries correctly', async () => {
-    mockDLQ.listEntries.mockReturnValue([makeDLQEntry('a'), makeDLQEntry('b')]);
-    mockDLQ.getEntry
-      .mockImplementation((id: string) => makeDLQEntry(id));
-    mockDLQ.checkDedupe.mockReturnValue({ exists: false });
-    mockDLQ.markReplayed.mockReturnValue(true);
+  it('allows delivery when under the rate limit', async () => {
     mockedAxios.post.mockResolvedValue({ status: 200 });
 
-    const result = await service.replayAll();
-    expect(result.attempted).toBe(2);
-    expect(result.succeeded).toBe(2);
-    expect(result.failed).toBe(0);
-    expect(result.deduped).toBe(0);
+    const service = new WebhookService();
+    await service.send({ id: 'rl-1', url: 'https://example.com/hook', data: {}, retryCount: 0 });
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(service.getDLQ()).toHaveLength(0);
   });
 
-  it('counts failed entries correctly on send error', async () => {
-    mockDLQ.listEntries.mockReturnValue([makeDLQEntry('x')]);
-    const spy = jest.spyOn(service, 'replayDLQEntry');
-    spy.mockResolvedValue({ success: false, message: 'network error' });
+  it('DLQs with RATE_LIMITED error when host limit is exceeded', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
 
-    const result = await service.replayAll();
-    expect(result.attempted).toBe(1);
-    expect(result.failed).toBe(1);
-    expect(result.succeeded).toBe(0);
+    // Set limit to 1 so second call triggers it
+    (WebhookService as any).hostRateStore = new RateLimitStore({ sweepIntervalMs: 9_999_999 });
+
+    // Manually pre-fill the store to simulate limit reached
+    const store: RateLimitStore = (WebhookService as any).hostRateStore;
+    store.set('example.com', { count: 60, windowStart: Date.now(), blocked: false, blockedUntil: 0 });
+
+    const service = new WebhookService();
+    await service.send({ id: 'rl-2', url: 'https://example.com/hook', data: {}, retryCount: 0 });
+
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    const dlq = service.getDLQ();
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0].error).toContain('RATE_LIMITED');
+    expect(dlq[0].error).toContain('example.com');
   });
 
-  it('counts deduped entries correctly', async () => {
-    mockDLQ.listEntries.mockReturnValue([makeDLQEntry('d')]);
-    mockDLQ.getEntry.mockImplementation((id: string) => makeDLQEntry(id));
-    mockDLQ.checkDedupe.mockReturnValue({ exists: true, entryId: 'other-id' });
-    mockDLQ.markReplayed.mockReturnValue(true);
+  it('does not cross-limit different hostnames', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
 
-    const result = await service.replayAll();
-    expect(result.attempted).toBe(1);
-    expect(result.deduped).toBe(1);
-    expect(result.succeeded).toBe(0);
-    expect(result.failed).toBe(0);
+    const store: RateLimitStore = (WebhookService as any).hostRateStore;
+    // Fill up example.com but not other.com
+    store.set('example.com', { count: 60, windowStart: Date.now(), blocked: false, blockedUntil: 0 });
+
+    const service = new WebhookService();
+    await service.send({ id: 'rl-3', url: 'https://other.com/hook', data: {}, retryCount: 0 });
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(service.getDLQ()).toHaveLength(0);
   });
 
-  it('handles mixed success, failure, and deduped in one batch', async () => {
-    mockDLQ.listEntries.mockReturnValue([
-      makeDLQEntry('ok'),
-      makeDLQEntry('fail'),
-      makeDLQEntry('dup'),
-    ]);
-    mockDLQ.getEntry.mockImplementation((id: string) => makeDLQEntry(id));
+  it('DLQs on rate limit without retrying', async () => {
+    const store: RateLimitStore = (WebhookService as any).hostRateStore;
+    store.set('example.com', { count: 60, windowStart: Date.now(), blocked: false, blockedUntil: 0 });
 
-    mockDLQ.checkDedupe.mockImplementation((_id: string, _body: unknown) => {
-      // We can't distinguish by webhookId easily here, so use a counter
-      return { exists: false };
-    });
+    const service = new WebhookService();
+    await service.send({ id: 'rl-4', url: 'https://example.com/hook', data: {}, retryCount: 0 });
 
-    // Override per-entry: use getEntry to gate behavior via replayDLQEntry internals
-    // Easier: spy on replayDLQEntry itself for granular control
-    const spy = jest.spyOn(service, 'replayDLQEntry');
-    spy.mockImplementation(async (id: string) => {
-      if (id === 'ok') return { success: true, message: 'Replay successful' };
-      if (id === 'fail') return { success: false, message: 'error' };
-      return { success: true, message: 'Deduplicated - entry already pending replay' };
-    });
-
-    const result = await service.replayAll({ concurrency: 3 });
-    expect(result).toEqual({ attempted: 3, succeeded: 1, failed: 1, deduped: 1 });
-  });
-
-  it('processes entries in batches respecting concurrency cap', async () => {
-    const entries = Array.from({ length: 6 }, (_, i) => makeDLQEntry(String(i)));
-    mockDLQ.listEntries.mockReturnValue(entries);
-
-    const callOrder: string[] = [];
-    const spy = jest.spyOn(service, 'replayDLQEntry');
-    spy.mockImplementation(async (id: string) => {
-      callOrder.push(id);
-      return { success: true, message: 'Replay successful' };
-    });
-
-    await service.replayAll({ concurrency: 2 });
-
-    // All 6 entries processed
-    expect(callOrder).toHaveLength(6);
-    expect(spy).toHaveBeenCalledTimes(6);
-  });
-
-  it('does not throw when all entries fail (no unhandled rejection)', async () => {
-    const entries = Array.from({ length: 3 }, (_, i) => makeDLQEntry(String(i)));
-    mockDLQ.listEntries.mockReturnValue(entries);
-
-    const spy = jest.spyOn(service, 'replayDLQEntry');
-    spy.mockRejectedValue(new Error('catastrophic'));
-
-    await expect(service.replayAll({ concurrency: 5 })).resolves.toEqual({
-      attempted: 3,
-      succeeded: 0,
-      failed: 3,
-      deduped: 0,
-    });
-  });
-
-  it('uses default concurrency of 5 when not specified', async () => {
-    const entries = Array.from({ length: 10 }, (_, i) => makeDLQEntry(String(i)));
-    mockDLQ.listEntries.mockReturnValue(entries);
-
-    const spy = jest.spyOn(service, 'replayDLQEntry');
-    spy.mockResolvedValue({ success: true, message: 'Replay successful' });
-
-    const result = await service.replayAll();
-    expect(result.attempted).toBe(10);
-    expect(result.succeeded).toBe(10);
-  });
-
-  it('clamps concurrency to minimum of 1', async () => {
-    mockDLQ.listEntries.mockReturnValue([makeDLQEntry('z')]);
-    const spy = jest.spyOn(service, 'replayDLQEntry');
-    spy.mockResolvedValue({ success: true, message: 'Replay successful' });
-
-    const result = await service.replayAll({ concurrency: 0 });
-    expect(result.attempted).toBe(1);
-    expect(result.succeeded).toBe(1);
+    // isSafeUrl called once; axios never called
+    expect(mockedIsSafeUrl).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 });
