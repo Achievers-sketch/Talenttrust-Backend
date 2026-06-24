@@ -6,6 +6,8 @@ const mockGetLedgerEntries = jest.fn();
 const mockSimulateTransaction = jest.fn();
 const mockSendTransaction = jest.fn();
 const mockGetTransaction = jest.fn();
+const mockGetEvents = jest.fn();
+const mockGetLatestLedger = jest.fn();
 
 jest.mock('@stellar/stellar-sdk', () => {
   const actualStellarSdk = jest.requireActual('@stellar/stellar-sdk');
@@ -19,6 +21,8 @@ jest.mock('@stellar/stellar-sdk', () => {
           simulateTransaction: mockSimulateTransaction,
           sendTransaction: mockSendTransaction,
           getTransaction: mockGetTransaction,
+          getEvents: mockGetEvents,
+          getLatestLedger: mockGetLatestLedger,
         };
       }),
     },
@@ -67,6 +71,40 @@ describe('SorobanRpcService', () => {
       const key = StellarSdk.xdr.ScVal.scvSymbol('Test');
 
       await expect(service.getContractData(contractId, key)).rejects.toThrow('Network Error');
+    });
+  });
+
+  describe('getLatestLedger', () => {
+    it('should return the latest ledger info', async () => {
+      const mockResponse = { id: 'ledger', sequence: 1234, protocolVersion: '22' };
+      mockGetLatestLedger.mockResolvedValue(mockResponse);
+
+      const result = await service.getLatestLedger();
+      expect(result).toEqual(mockResponse);
+      expect(mockGetLatestLedger).toHaveBeenCalledTimes(1);
+    });
+
+    it('should throw if the RPC call fails', async () => {
+      mockGetLatestLedger.mockRejectedValue(new Error('Ledger Error'));
+      await expect(service.getLatestLedger()).rejects.toThrow('Ledger Error');
+    });
+  });
+
+  describe('getEvents', () => {
+    it('should return events for the given request', async () => {
+      const mockResponse = { latestLedger: 10, events: [], cursor: '' };
+      mockGetEvents.mockResolvedValue(mockResponse);
+
+      const request = { filters: [{ type: 'contract' as const }], startLedger: 1 };
+      const result = await service.getEvents(request);
+      expect(result).toEqual(mockResponse);
+      expect(mockGetEvents).toHaveBeenCalledWith(request);
+    });
+
+    it('should throw if the RPC call fails', async () => {
+      mockGetEvents.mockRejectedValue(new Error('Events Error'));
+      const request = { filters: [{ type: 'contract' as const }], startLedger: 1 };
+      await expect(service.getEvents(request)).rejects.toThrow('Events Error');
     });
   });
 

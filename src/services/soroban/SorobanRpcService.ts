@@ -46,6 +46,43 @@ export class SorobanRpcService {
   }
 
   /**
+   * Fetches the most recent ledger known to the RPC server.
+   *
+   * Used by sync workers to discover the chain head so they only scan up to a
+   * real, settled ledger instead of an arbitrary upper bound.
+   *
+   * @returns The latest ledger metadata (id, sequence, protocol version).
+   */
+  public async getLatestLedger(): Promise<rpc.Api.GetLatestLedgerResponse> {
+    try {
+      return await this.server.getLatestLedger();
+    } catch (error) {
+      console.error('Error fetching latest ledger:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Queries contract events from the network for a given filter/ledger window.
+   *
+   * Thin pass-through to the underlying RPC `getEvents` call. Pagination is left
+   * to the caller via the returned `cursor` so large windows can be streamed.
+   *
+   * @param request - Event filters plus the ledger/cursor window to scan.
+   * @returns A page of decoded events together with the paging cursor.
+   */
+  public async getEvents(
+    request: rpc.Server.GetEventsRequest
+  ): Promise<rpc.Api.GetEventsResponse> {
+    try {
+      return await this.server.getEvents(request);
+    } catch (error) {
+      console.error('Error fetching contract events:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Simulates a given transaction on the Soroban network to calculate fees and resource usage.
    *
    * @param transaction - The unsigned or signed transaction to be simulated.

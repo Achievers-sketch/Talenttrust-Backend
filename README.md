@@ -357,6 +357,42 @@ Upstream RPC calls (Stellar/Soroban) are protected by a built-in circuit breaker
 
 Live state is available at `GET /api/v1/circuit-breaker/status`. See [`docs/backend/circuit-breaker.md`](docs/backend/circuit-breaker.md) for full reference.
 
+## Blockchain Sync
+
+The `blockchain-sync` background job ingests on-chain Soroban contract events
+into the local indexer. It scans a ledger range, fetches events from the
+Soroban RPC layer, and persists each event so downstream consumers (reputation,
+escrow flows) see the latest chain state.
+
+| Behaviour | Detail |
+| --------- | ------ |
+| **Real RPC ingestion** | Events are fetched via `SorobanRpcService.getEvents` (no more stubbed batches). |
+| **Idempotent persistence** | Each event is keyed by `contractId:eventId:ledger`; replayed or retried batches never double-write. |
+| **Circuit-breaker guarded** | Every RPC call runs through the shared breaker; an open circuit fast-fails the job. |
+| **Resumable** | Progress is checkpointed per batch via a cursor, so a restarted job resumes from the last synced ledger instead of re-scanning from zero. |
+| **Fail-and-retry** | RPC/timeout errors throw so the queue retries the job rather than silently reporting success. |
+| **SSRF-guarded** | `SOROBAN_RPC_URL` is validated against the SSRF allow-list before any egress. |
+
+Job payload (`BlockchainSyncPayload`):
+
+```jsonc
+{
+  "network": "soroban",   // or "stellar"
+  "startBlock": 1000,      // optional — resumes from the last cursor when omitted
+  "endBlock": 1100         // optional — defaults to the current chain head
+}
+```
+
+| Environment variable | Default | Description |
+| -------------------- | ------- | ----------- |
+| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban JSON-RPC endpoint (must be a public, SSRF-safe URL). |
+| `SOROBAN_CONTRACT_ID` | *(empty)* | When set, events are filtered to this contract. |
+
+When neither `startBlock` nor a stored cursor exists, the job starts from ledger
+`0`; when `endBlock` is omitted, the current chain head is discovered via
+`getLatestLedger`. If there is nothing new to sync, the job returns early
+without making event calls.
+
 ## New Features
 
 ### 1. Authentication Middleware (#55)
