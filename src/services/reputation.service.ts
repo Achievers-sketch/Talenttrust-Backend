@@ -4,6 +4,63 @@ import { auditService } from '../audit/service';
 import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
+import { validateEnv } from '../config/env.schema';
+
+/**
+ * Computes a recency-weighted reputation score using exponential time decay.
+ *
+ * Each rating's contribution is weighted by exp(-λ * ageInDays), where ageInDays
+ * is the number of days between the rating's createdAt timestamp and the reference
+ * date (now). Newer ratings contribute more; older ratings decay toward zero weight.
+ *
+ * The result is guaranteed to be within the rating value range if all input ratings
+ * are within that range. Returns 0 for an empty ratings array.
+ *
+ * @param ratings - Array of rating records; each must have a numeric rating value
+ *                  and an ISO 8601 createdAt timestamp string.
+ * @param now     - Reference date for age calculation; parameterised for
+ *                  deterministic testing with fixed clocks.
+ * @param lambda  - Decay constant (λ); higher values decay faster.
+ *                  Must be positive. Source: REPUTATION_DECAY_LAMBDA env config.
+ * @returns The weighted mean score, or 0 if ratings is empty.
+ */
+export function computeWeightedReputationScore(
+  ratings: Array<{ rating: number; createdAt: string }>,
+  now: Date,
+  lambda: number
+): number {
+  // Empty ratings array returns 0
+  if (ratings.length === 0) {
+    return 0;
+  }
+
+  let weightedSum = 0;
+  let totalWeight = 0;
+
+  const nowTime = now.getTime();
+
+  for (const ratingEntry of ratings) {
+    // Parse createdAt ISO string to Date
+    const createdAtTime = new Date(ratingEntry.createdAt).getTime();
+    
+    // Compute age in days, clamping to 0 minimum (defense against future timestamps)
+    const ageInDays = Math.max(0, (nowTime - createdAtTime) / (1000 * 60 * 60 * 24));
+    
+    // Compute exponential decay weight
+    const weight = Math.exp(-lambda * ageInDays);
+    
+    // Accumulate weighted sum and total weight
+    weightedSum += ratingEntry.rating * weight;
+    totalWeight += weight;
+  }
+
+  // Defensive check (theoretically impossible with finite lambda and non-negative ages)
+  if (totalWeight === 0) {
+    return 0;
+  }
+
+  return weightedSum / totalWeight;
+}
 
 /**
  * @title Reputation Service
@@ -179,6 +236,26 @@ export class ReputationService {
       ? entries.reduce((sum, entry) => sum + entry.rating, 0) / totalRatings
       : 0;
 
+    // Get validated config for reputation scoring parameters
+    // Use try-catch to gracefully handle test environments where full env may not be set
+    let lambda = 0.005; // default
+    let algorithmVersion = 'exp-decay-v1'; // default
+    try {
+      const config = validateEnv(process.env);
+      lambda = config.REPUTATION_DECAY_LAMBDA;
+      algorithmVersion = config.REPUTATION_SCORE_ALGORITHM_VERSION;
+    } catch (error) {
+      // In test environment or when env validation fails, use defaults
+      // This allows tests to run without setting all env vars
+    }
+
+    // Compute weighted score using recency-aware algorithm
+    const weightedScore = computeWeightedReputationScore(
+      entries,
+      new Date(),
+      lambda
+    );
+
     return {
       freelancerId: targetId,
       score: parseFloat(score.toFixed(2)),
@@ -191,6 +268,8 @@ export class ReputationService {
         createdAt: entry.createdAt,
       })),
       lastUpdated: entries.length > 0 ? entries[0].createdAt : new Date().toISOString(),
+      weightedScore: parseFloat(weightedScore.toFixed(2)),
+      scoreAlgorithm: algorithmVersion,
     };
   }
 

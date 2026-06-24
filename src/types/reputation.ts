@@ -17,6 +17,8 @@ export interface ReputationProfile {
   totalRatings: number;
   reviews: Review[];
   lastUpdated: string; // ISO 8601 date string
+  weightedScore: number;    // Recency-weighted score (0.0 - 5.0 range)
+  scoreAlgorithm: string;   // Algorithm identifier, e.g. "exp-decay-v1"
 }
 
 export interface UpdateReputationPayload {

@@ -132,6 +132,17 @@ export const envSchema = z.object({
       return limits;
     })
     .pipe(z.record(z.string(), z.number()).optional()),
+
+  // Reputation Scoring Configuration
+  REPUTATION_DECAY_LAMBDA: z.string()
+    .default('0.005')
+    .transform((val) => parseFloat(val))
+    .pipe(z.number()
+      .positive('REPUTATION_DECAY_LAMBDA must be greater than 0')
+      .max(1, 'REPUTATION_DECAY_LAMBDA must be less than or equal to 1')),
+
+  REPUTATION_SCORE_ALGORITHM_VERSION: z.string()
+    .default('exp-decay-v1'),
 });
 
 
