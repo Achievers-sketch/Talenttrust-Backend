@@ -16,7 +16,6 @@ module.exports = {
     'deployment/integration.test.ts',
     'retention/integration.test.ts',
     'contractMetadata.integration.test.ts',
-    'TransactionPoller.test.ts',
     'requestLogger.test.ts',
     'reputation.controller.test.ts',
     'validate.middleware.test.ts',
