@@ -102,6 +102,24 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    name: "create_transactions_table",
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS transactions (",
+    ].join("\n"),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS transactions (
+          hash            TEXT    PRIMARY KEY,
+          status          TEXT    NOT NULL,
+          receipt         TEXT,
+          last_checked_at TEXT,
+          retry_count     INTEGER NOT NULL DEFAULT 0
+        );
+      `);
+    },
+  },
 ];
 
 function ensureMigrationTable(db: Database.Database): void {
