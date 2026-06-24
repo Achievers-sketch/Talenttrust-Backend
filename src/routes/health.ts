@@ -25,8 +25,9 @@ registry.registerPath({
           schema: {
             type: 'object',
             properties: {
-              status: { type: 'string', example: 'ok' },
-              service: { type: 'string', example: 'talenttrust-backend' }
+              status: { type: 'string', example: 'healthy' },
+              timestamp: { type: 'string', example: new Date().toISOString() },
+              version: { type: 'string', example: '0.1.0' }
             }
           }
         }
@@ -36,9 +37,17 @@ registry.registerPath({
 });
 
 healthRouter.get('/', (_req: Request, res: Response) => {
-  res.status(200).json({ status: 'ok', service: 'talenttrust-backend' });
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: process.env.npm_package_version ?? '0.1.0',
+  });
 });
 
 healthRouter.post('/', (_req: Request, res: Response) => {
-  res.status(200).json({ status: 'ok', service: 'talenttrust-backend' });
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: process.env.npm_package_version ?? '0.1.0',
+  });
 });

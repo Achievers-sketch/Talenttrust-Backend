@@ -22,6 +22,7 @@ import { validateEnv } from './config/env.schema';
 import { createRequestLimitsMiddleware } from './middleware/requestLimits';
 
 import contractsModuleRouter from './routes/contracts.routes';
+import eventsRouter from './routes/events.routes';
 
 import reputationRouter from './routes/reputation.routes';
 import configRouter from './routes/config.routes';
@@ -32,6 +33,7 @@ import { requestIdMiddleware } from './middleware/requestId';
 import { httpLoggerMiddleware } from './middleware/httpLogger';
 import { ReputationService } from './services/reputation.service';
 import { getDb } from './db/database';
+import { eventIngestionService } from './events/registry';
 
 interface AppFactoryOptions {
   includeTerminalHandlers?: boolean;
@@ -78,6 +80,15 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/health', legacyHealthRouter);
   app.use('/health', readinessHealthRouter);
   app.use('/api/config', configRouter);
+  app.use('/api/v1/events', eventsRouter);
+  app.get('/api/v1/stats', async (_req, res, next) => {
+    try {
+      const stats = await eventIngestionService.getStatistics();
+      res.status(200).json(stats);
+    } catch (error) {
+      next(error);
+    }
+  });
   app.use('/api/v1/contracts', contractsModuleRouter);
   app.use('/api/v1/reputation', reputationRouter);
   app.use('/api/v1/dependency-scan', dependencyScanRouter);
