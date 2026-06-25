@@ -7,10 +7,11 @@
  * @security Requires admin role via JWT authentication
  */
 
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { QueueManager, getWebhookDLQStorage } from '../queue';
 import { requireAuth, requireRole } from '../middleware/authorization';
 import { circuitBreakerRegistry } from '../circuit-breaker/registry';
+import { WebhookService } from '../services/webhook.service';
 
 export const adminRouter = Router();
 
@@ -51,5 +52,30 @@ adminRouter.get(
       status: 'success',
       data: { breakers, timestamp: Date.now() },
     });
+  }
+);
+
+/**
+ * POST /api/v1/admin/webhooks/dlq/replay-all
+ *
+ * Replays all pending DLQ entries with bounded concurrency (backpressure).
+ * Accepts optional `concurrency` body param (default: 5, min: 1, max: 50).
+ * Returns a summary { attempted, succeeded, failed, deduped }.
+ */
+adminRouter.post(
+  '/webhooks/dlq/replay-all',
+  requireAuth,
+  requireRole('admin'),
+  async (req: Request, res: Response) => {
+    const rawConcurrency = req.body?.concurrency;
+    const concurrency =
+      typeof rawConcurrency === 'number'
+        ? Math.min(50, Math.max(1, Math.floor(rawConcurrency)))
+        : 5;
+
+    const service = new WebhookService();
+    const summary = await service.replayAll({ concurrency });
+
+    res.status(200).json({ status: 'success', data: summary });
   }
 );

@@ -1,4 +1,4 @@
-import * as Database from '../db/betterSqlite3';
+import Database from '../db/betterSqlite3';
 import { SqliteAuditRepository } from './sqliteRepository';
 import type { CreateAuditEntryInput } from './types';
 
@@ -15,7 +15,7 @@ function makeInput(overrides: Partial<CreateAuditEntryInput> = {}): CreateAuditE
 }
 
 describe('SqliteAuditRepository', () => {
-  let db: Database.Database;
+  let db: typeof Database;
   let repository: SqliteAuditRepository;
 
   beforeEach(() => {

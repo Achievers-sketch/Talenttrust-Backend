@@ -1,6 +1,9 @@
 import { WebhookService } from './webhook.service';
+import { MetricsServiceLike } from '../observability';
 import axios from 'axios';
 import { createWebhookSignature } from '../utils/webhook-signing.util';
+import * as ssrf from '../utils/ssrf';
+import { RateLimitStore } from '../lib/rateLimitStore';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -8,9 +11,13 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 jest.mock('../utils/webhook-signing.util');
 const mockedCreateWebhookSignature = createWebhookSignature as jest.MockedFunction<typeof createWebhookSignature>;
 
+jest.mock('../utils/ssrf');
+const mockedIsSafeUrl = ssrf.isSafeUrl as jest.MockedFunction<typeof ssrf.isSafeUrl>;
+
 describe('WebhookService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedIsSafeUrl.mockReturnValue(true);
   });
 
   it('sends webhook without signature when no secret is provided', async () => {
@@ -151,6 +158,7 @@ describe('WebhookService', () => {
 describe('WebhookService with correlation ID propagation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedIsSafeUrl.mockReturnValue(true);
   });
 
   /**
@@ -310,5 +318,145 @@ describe('WebhookService with correlation ID propagation', () => {
         }),
       })
     );
+  });
+});
+
+/**
+ * SSRF guard tests — delivery must be rejected and DLQ'd for private/internal URLs.
+ */
+describe('WebhookService SSRF guard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('DLQs immediately when isSafeUrl returns false and does not call axios', async () => {
+    mockedIsSafeUrl.mockReturnValue(false);
+
+    const service = new WebhookService();
+    const payload = {
+      id: 'ssrf-1',
+      url: 'http://192.168.1.1/hook',
+      data: { event: 'test' },
+      retryCount: 0,
+    };
+
+    await service.send(payload);
+
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    const dlq = service.getDLQ();
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0].webhookId).toBe('ssrf-1');
+    expect(dlq[0].error).toContain('SSRF_BLOCKED');
+  });
+
+  it('DLQs on every retry attempt when isSafeUrl consistently returns false', async () => {
+    mockedIsSafeUrl.mockReturnValue(false);
+
+    const service = new WebhookService();
+    await service.send({ id: 'ssrf-2', url: 'http://localhost/hook', data: {}, retryCount: 0 });
+
+    // isSafeUrl should be checked once (immediate reject, no retries)
+    expect(mockedIsSafeUrl).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('re-checks isSafeUrl on each retry attempt', async () => {
+    // Passes first check, fails on second (simulates DNS rebinding between retries)
+    mockedIsSafeUrl
+      .mockReturnValueOnce(true)   // attempt 0 — passes SSRF, but network fails
+      .mockReturnValueOnce(false); // attempt 1 — DLQ
+
+    mockedAxios.post.mockRejectedValueOnce(new Error('Network Error'));
+
+    const service = new WebhookService();
+    jest.useFakeTimers();
+    try {
+      const op = service.send({ id: 'ssrf-3', url: 'https://example.com/hook', data: {}, retryCount: 0 });
+      await jest.runOnlyPendingTimersAsync();
+      await op;
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(mockedIsSafeUrl).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1); // only the first attempt fired
+    const dlq = service.getDLQ();
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0].error).toContain('SSRF_BLOCKED');
+  });
+});
+
+/**
+ * Per-host rate-limit tests.
+ */
+describe('WebhookService per-host rate limiting', () => {
+  const ORIG_ENV = process.env;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedIsSafeUrl.mockReturnValue(true);
+    // Reset shared store between tests
+    (WebhookService as any).hostRateStore = new RateLimitStore({ sweepIntervalMs: 9_999_999 });
+    process.env = { ...ORIG_ENV, WEBHOOK_HOST_RATE_LIMIT_MAX: '3', WEBHOOK_HOST_RATE_LIMIT_WINDOW_MS: '60000' };
+  });
+
+  afterEach(() => {
+    process.env = ORIG_ENV;
+  });
+
+  it('allows delivery when under the rate limit', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
+
+    const service = new WebhookService();
+    await service.send({ id: 'rl-1', url: 'https://example.com/hook', data: {}, retryCount: 0 });
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(service.getDLQ()).toHaveLength(0);
+  });
+
+  it('DLQs with RATE_LIMITED error when host limit is exceeded', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
+
+    // Set limit to 1 so second call triggers it
+    (WebhookService as any).hostRateStore = new RateLimitStore({ sweepIntervalMs: 9_999_999 });
+
+    // Manually pre-fill the store to simulate limit reached
+    const store: RateLimitStore = (WebhookService as any).hostRateStore;
+    store.set('example.com', { count: 60, windowStart: Date.now(), blocked: false, blockedUntil: 0 });
+
+    const service = new WebhookService();
+    await service.send({ id: 'rl-2', url: 'https://example.com/hook', data: {}, retryCount: 0 });
+
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    const dlq = service.getDLQ();
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0].error).toContain('RATE_LIMITED');
+    expect(dlq[0].error).toContain('example.com');
+  });
+
+  it('does not cross-limit different hostnames', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
+
+    const store: RateLimitStore = (WebhookService as any).hostRateStore;
+    // Fill up example.com but not other.com
+    store.set('example.com', { count: 60, windowStart: Date.now(), blocked: false, blockedUntil: 0 });
+
+    const service = new WebhookService();
+    await service.send({ id: 'rl-3', url: 'https://other.com/hook', data: {}, retryCount: 0 });
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(service.getDLQ()).toHaveLength(0);
+  });
+
+  it('DLQs on rate limit without retrying', async () => {
+    const store: RateLimitStore = (WebhookService as any).hostRateStore;
+    store.set('example.com', { count: 60, windowStart: Date.now(), blocked: false, blockedUntil: 0 });
+
+    const service = new WebhookService();
+    await service.send({ id: 'rl-4', url: 'https://example.com/hook', data: {}, retryCount: 0 });
+
+    // isSafeUrl called once; axios never called
+    expect(mockedIsSafeUrl).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 });

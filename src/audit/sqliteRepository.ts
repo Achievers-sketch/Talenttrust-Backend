@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import * as Database from "../db/betterSqlite3";
+import Database from "../db/betterSqlite3";
 import { computeEntryHash, GENESIS_HASH } from './store';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport } from './types';
 import type { AuditLogRepository } from './repository';
@@ -37,7 +37,7 @@ function toAuditEntry(row: AuditRow): AuditEntry {
 }
 
 export class SqliteAuditRepository implements AuditLogRepository {
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: typeof Database) {
     this.initSchema();
   }
 

@@ -10,6 +10,7 @@
  * - Weighted reputation scoring algorithm
  */
 
+import { createHash } from 'crypto';
 import { ReputationService, computeWeightedReputationScore } from './reputation.service';
 import { getDb, closeDb } from '../db/database';
 import Database from '../db/betterSqlite3';
@@ -50,7 +51,7 @@ function sha256(text: string): string {
  * @param freelancerId - User who plays the freelancer role.
  */
 function insertContract(
-  db: Database.Database,
+  db: typeof Database,
   id: string,
   clientId: string = REVIEWER_ID,
   freelancerId: string = TARGET_ID,
@@ -65,7 +66,7 @@ function insertContract(
 /**
  * Returns the total number of reputation_entries rows currently in the DB.
  */
-function reputationRowCount(db: Database.Database): number {
+function reputationRowCount(db: typeof Database): number {
   const row = db.prepare<[], { c: number }>('SELECT COUNT(*) AS c FROM reputation_entries').get();
   return row?.c ?? 0;
 }
@@ -75,7 +76,7 @@ function reputationRowCount(db: Database.Database): number {
 // ---------------------------------------------------------------------------
 
 describe('ReputationService.createRating — anti-abuse protections', () => {
-  let db: Database.Database;
+  let db: typeof Database;
 
   beforeAll(() => {
     // Use a fresh in-memory SQLite instance with full schema migrations.
@@ -762,12 +763,12 @@ describe('ReputationService.createRating — anti-abuse protections', () => {
       const uniqueContext = 'context-weighted-1';
       db.exec(`
         INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
-        VALUES ('${uniqueContext}', 'Test', '${reviewerId}', '${targetId}', 1100, 'completed', 0, datetime('now'));
+        VALUES ('${uniqueContext}', 'Test', '${REVIEWER_ID}', '${TARGET_ID}', 1100, 'completed', 0, datetime('now'));
       `);
 
-      ReputationService.createRating(reviewerId, targetId, 5, uniqueContext);
+      ReputationService.createRating(REVIEWER_ID, TARGET_ID, 5, uniqueContext);
 
-      const profile = ReputationService.getProfile(targetId);
+      const profile = ReputationService.getProfile(TARGET_ID);
 
       expect(profile.weightedScore).toBeDefined();
       expect(typeof profile.weightedScore).toBe('number');
@@ -779,12 +780,12 @@ describe('ReputationService.createRating — anti-abuse protections', () => {
       const uniqueContext = 'context-weighted-2';
       db.exec(`
         INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
-        VALUES ('${uniqueContext}', 'Test', '${reviewerId}', '${targetId}', 1200, 'completed', 0, datetime('now'));
+        VALUES ('${uniqueContext}', 'Test', '${REVIEWER_ID}', '${TARGET_ID}', 1200, 'completed', 0, datetime('now'));
       `);
 
-      ReputationService.createRating(reviewerId, targetId, 4, uniqueContext);
+      ReputationService.createRating(REVIEWER_ID, TARGET_ID, 4, uniqueContext);
 
-      const profile = ReputationService.getProfile(targetId);
+      const profile = ReputationService.getProfile(TARGET_ID);
 
       expect(profile.scoreAlgorithm).toBeDefined();
       expect(typeof profile.scoreAlgorithm).toBe('string');
@@ -795,12 +796,12 @@ describe('ReputationService.createRating — anti-abuse protections', () => {
       const uniqueContext = 'context-weighted-3';
       db.exec(`
         INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
-        VALUES ('${uniqueContext}', 'Test', '${reviewerId}', '${targetId}', 1300, 'completed', 0, datetime('now'));
+        VALUES ('${uniqueContext}', 'Test', '${REVIEWER_ID}', '${TARGET_ID}', 1300, 'completed', 0, datetime('now'));
       `);
 
-      ReputationService.createRating(reviewerId, targetId, 5, uniqueContext, 'Excellent');
+      ReputationService.createRating(REVIEWER_ID, TARGET_ID, 5, uniqueContext, 'Excellent');
 
-      const profile = ReputationService.getProfile(targetId);
+      const profile = ReputationService.getProfile(TARGET_ID);
 
       // Verify all existing fields are still present
       expect(profile.freelancerId).toBeDefined();
@@ -831,20 +832,20 @@ describe('ReputationService.createRating — anti-abuse protections', () => {
         INSERT INTO contracts 
         (id, title, client_id, freelancer_id, amount, status, version, created_at)
         VALUES 
-          ('${uniqueContext1}', 'Old Contract', '${reviewerId}', '${targetId}', 1400, 'completed', 0, datetime('now', '-365 days')),
-          ('${uniqueContext2}', 'New Contract', '${reviewerId}', '${targetId}', 1500, 'completed', 0, datetime('now'));
+          ('${uniqueContext1}', 'Old Contract', '${REVIEWER_ID}', '${TARGET_ID}', 1400, 'completed', 0, datetime('now', '-365 days')),
+          ('${uniqueContext2}', 'New Contract', '${REVIEWER_ID}', '${TARGET_ID}', 1500, 'completed', 0, datetime('now'));
       `);
 
       // Insert old low rating manually with old createdAt
       db.exec(`
         INSERT INTO reputation_entries (id, reviewer_id, target_id, rating, comment, context_id, created_at)
-        VALUES ('old-rating-id', '${reviewerId}', '${targetId}', 1, 'Old rating', '${uniqueContext1}', datetime('now', '-365 days'));
+        VALUES ('old-rating-id', '${REVIEWER_ID}', '${TARGET_ID}', 1, 'Old rating', '${uniqueContext1}', datetime('now', '-365 days'));
       `);
 
       // Insert recent high rating
-      ReputationService.createRating(reviewerId, targetId, 5, uniqueContext2, 'Recent rating');
+      ReputationService.createRating(REVIEWER_ID, TARGET_ID, 5, uniqueContext2, 'Recent rating');
 
-      const profile = ReputationService.getProfile(targetId);
+      const profile = ReputationService.getProfile(TARGET_ID);
 
       // Arithmetic mean should be (1 + 5) / 2 = 3.0
       expect(profile.score).toBe(3.0);

@@ -1,4 +1,4 @@
-import * as Database from '../db/betterSqlite3';
+import Database from '../db/betterSqlite3';
 import { randomUUID } from 'crypto';
 
 interface NotificationRow {
@@ -10,9 +10,9 @@ interface NotificationRow {
 }
 
 export class NotificationRepository {
-  private db: Database.Database;
+  private db: Database;
 
-  constructor(db: Database.Database) {
+  constructor(db: typeof Database) {
     this.db = db;
   }
 

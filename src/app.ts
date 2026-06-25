@@ -29,7 +29,6 @@ import configRouter from './routes/config.routes';
 import dependencyScanRouter from './routes/dependency-scan.routes';
 import { adminRouter } from './routes/admin.routes';
 import { deployRouter } from './routes/deploy.routes';
-import eventsRouter from './routes/events.routes';
 import { requestIdMiddleware } from './middleware/requestId';
 import { httpLoggerMiddleware } from './middleware/httpLogger';
 import { ReputationService } from './services/reputation.service';

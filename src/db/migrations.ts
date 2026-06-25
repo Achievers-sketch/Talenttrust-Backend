@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 export interface Migration {
   version: number;
   name: string;
+  checksumSource?: string;
   up: (db: Database.Database) => void;
 }
 
@@ -119,7 +120,7 @@ const MIGRATIONS: Migration[] = [
     },
   },
   {
-    version: 4,
+    version: 5,
     name: "create_transactions_table",
     checksumSource: [
       "CREATE TABLE IF NOT EXISTS transactions (",
@@ -137,6 +138,30 @@ const MIGRATIONS: Migration[] = [
     },
   },
 ];
+
+// Version 6: deployment_history table
+MIGRATIONS.push({
+  version: 6,
+  name: "create_deployment_history_table",
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS deployment_history (
+        id TEXT PRIMARY KEY,
+        environment_from TEXT NOT NULL,
+        environment_to TEXT,
+        target_version TEXT NOT NULL,
+        promotion_id TEXT,
+        rollback_id TEXT,
+        initiated_by TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('SUCCESS', 'FAILURE')),
+        error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_deployment_history_env_from ON deployment_history(environment_from);
+      CREATE INDEX IF NOT EXISTS idx_deployment_history_env_to ON deployment_history(environment_to);
+    `);
+  },
+});
 
 function ensureMigrationTable(db: Database.Database): void {
   db.exec(`

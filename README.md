@@ -335,6 +335,8 @@ The API uses **Role-Based Access Control (RBAC)** with four roles: `admin`,
 See [docs/backend/authentication-authorization.md](docs/backend/authentication-authorization.md)
 for the full access control matrix, architecture, and security notes.
 
+For API key authentication (used by internal/external service integrations), see [docs/api-keys.md](docs/api-keys.md) for the complete lifecycle, scope reference, and rotation guidance.
+
 ## Request Validation Framework
 
 The API now includes a schema-based request validation framework for:

@@ -268,6 +268,36 @@ post '/webhook' do
   { received: true }.to_json
 end
 ```
+## Delivery-Time Security Guards
+
+Two additional guards run **before every delivery attempt** (including retries) inside `WebhookService.send`.
+
+### SSRF Re-check
+
+The destination URL is validated by `isSafeUrl` (from `src/utils/ssrf.ts`) on each attempt. If the URL resolves to a private or loopback address (including RFC-1918 ranges, `localhost`, and the link-local metadata range `169.254.x.x`) the delivery is **immediately moved to the DLQ** with error code `SSRF_BLOCKED`. No retry is attempted.
+
+This re-check on every attempt guards against DNS rebinding attacks where an initially safe hostname is later made to resolve to an internal IP.
+
+### Per-Host Rate Limiting
+
+A sliding-window counter tracks deliveries per destination hostname. The counter is keyed by hostname (hashed via SHA-256 inside `RateLimitStore`) and shared across all `WebhookService` instances within a process.
+
+If the limit is exceeded the delivery is **immediately moved to the DLQ** with error code `RATE_LIMITED`. No retry is attempted.
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `WEBHOOK_HOST_RATE_LIMIT_MAX` | `60` | Maximum deliveries per host per window |
+| `WEBHOOK_HOST_RATE_LIMIT_WINDOW_MS` | `60000` | Window length in milliseconds |
+
+### Error Codes in DLQ
+
+| Code | Cause |
+|---|---|
+| `SSRF_BLOCKED: ...` | Destination URL failed the SSRF safety check |
+| `RATE_LIMITED: host <hostname> exceeded delivery limit` | Per-host delivery cap reached |
+
+---
+
 ## Webhook Delivery Retry Policy
 
 The Talenttrust Backend implements exponential backoff with jitter for webhook delivery to handle transient failures gracefully. Failed deliveries are automatically retried before being enqueued to the Dead Letter Queue (DLQ).

@@ -9,11 +9,15 @@ import {
 
 import { ServiceStatus } from './types';
 
+export type WebhookOutcome = 'success' | 'failure' | 'dlq';
+
 export interface MetricsServiceLike {
   contentType: string;
   trackHttpRequest: (req: Request, res: Response, next: NextFunction) => void;
   getMetrics: () => Promise<string>;
   recordHealthStatus: (status: ServiceStatus) => void;
+  recordWebhookDelivery: (outcome: WebhookOutcome) => void;
+  setWebhookDlqDepth: (depth: number) => void;
 }
 
 const HEALTH_STATUS_VALUE: Record<ServiceStatus, number> = {
@@ -35,6 +39,10 @@ export class MetricsService implements MetricsServiceLike {
   private readonly httpRequestDurationSeconds: Histogram;
 
   private readonly serviceHealthStatus: Gauge;
+
+  private readonly webhookDeliveriesTotal: Counter;
+
+  private readonly webhookDlqDepth: Gauge;
 
   constructor(private readonly serviceName: string, register?: Registry) {
     this.register = register ?? new Registry();
@@ -67,6 +75,19 @@ export class MetricsService implements MetricsServiceLike {
 
     this.serviceHealthStatus.set({ service: this.serviceName }, HEALTH_STATUS_VALUE.up);
     this.contentType = this.register.contentType;
+
+    this.webhookDeliveriesTotal = new Counter({
+      name: 'webhook_deliveries_total',
+      help: 'Total webhook delivery attempts by outcome.',
+      labelNames: ['outcome'],
+      registers: [this.register],
+    });
+
+    this.webhookDlqDepth = new Gauge({
+      name: 'webhook_dlq_depth',
+      help: 'Current number of entries in the webhook dead-letter queue.',
+      registers: [this.register],
+    });
   }
 
   trackHttpRequest(req: Request, res: Response, next: NextFunction): void {
@@ -93,6 +114,14 @@ export class MetricsService implements MetricsServiceLike {
       { service: this.serviceName },
       HEALTH_STATUS_VALUE[status],
     );
+  }
+
+  recordWebhookDelivery(outcome: WebhookOutcome): void {
+    this.webhookDeliveriesTotal.inc({ outcome });
+  }
+
+  setWebhookDlqDepth(depth: number): void {
+    this.webhookDlqDepth.set(depth);
   }
 
   getMetrics(): Promise<string> {

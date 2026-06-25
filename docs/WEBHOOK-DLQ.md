@@ -33,11 +33,83 @@ that cannot finish within the grace window are force-flushed to the DLQ.
 
 ### Admin Endpoints (`src/routes/admin.routes.ts`)
 
-| Method | Endpoint                              | Description        |
-|--------|---------------------------------------|--------------------|
-| GET    | /api/v1/admin/webhook-dlq             | List DLQ entries   |
-| GET    | /api/v1/admin/webhook-dlq/:id         | Get single entry   |
-| POST   | /api/v1/admin/webhook-dlq/:id/replay  | Replay webhook     |
+| Method | Endpoint                                      | Description            |
+|--------|-----------------------------------------------|------------------------|
+| GET    | /api/v1/admin/webhook-dlq                     | List DLQ entries       |
+| GET    | /api/v1/admin/webhook-dlq/:id                 | Get single entry       |
+| POST   | /api/v1/admin/webhook-dlq/:id/replay          | Replay one entry       |
+| POST   | /api/v1/admin/webhooks/dlq/replay-all         | Bulk replay all pending|
+
+---
+
+## Bulk DLQ Replay (`replay-all`)
+
+### Overview
+
+Operators recovering from an outage can replay the entire pending backlog in a
+single request.  The endpoint iterates all non-replayed DLQ entries in batches,
+processing up to `concurrency` entries in parallel to prevent overwhelming
+downstream webhook endpoints.
+
+### Endpoint
+
+```
+POST /api/v1/admin/webhooks/dlq/replay-all
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+
+{
+  "concurrency": 10   // optional, default 5, clamped to [1, 50]
+}
+```
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "attempted": 42,
+    "succeeded": 38,
+    "failed": 2,
+    "deduped": 2
+  }
+}
+```
+
+| Field       | Description                                                          |
+|-------------|----------------------------------------------------------------------|
+| `attempted` | Total entries processed (excludes already-replayed entries)         |
+| `succeeded` | Entries that were successfully delivered                            |
+| `failed`    | Entries that failed delivery                                        |
+| `deduped`   | Entries skipped because an identical pending entry already exists   |
+
+### Backpressure / Concurrency
+
+Entries are processed in batches of `concurrency` using `Promise.allSettled`.
+A single failed replay never aborts the rest of the batch — all settled results
+are collected and counted.
+
+```
+entries: [1 2 3 4 5 6 7]   concurrency=3
+batch 1: [1 2 3]  ← all run in parallel, wait for all to settle
+batch 2: [4 5 6]  ← ...
+batch 3: [7]
+```
+
+### Deduplication
+
+Before each replay, `WebhookDLQStorage.checkDedupe()` checks whether an
+identical payload (same `webhookId` + body hash) is already pending replay.
+Duplicate entries are marked replayed and counted as `deduped` rather than
+retried again.
+
+### Error handling
+
+Partial failures are tolerated — a single failing entry does not abort the
+batch.  Each entry result is captured via `Promise.allSettled` and counted
+in `succeeded`, `failed`, or `deduped`.  The endpoint always returns 200 with
+the summary.
 
 ---
 

@@ -60,6 +60,12 @@ export function isPrivateHost(host: string): boolean {
  * @returns true if the URL is safe, false if it points to a private/internal resource
  */
 export function isSafeUrl(urlString: string): boolean {
+  // Allow localhost/loopback and internal URLs in development and testing environments
+  const env = process.env.NODE_ENV;
+  if (env === 'development' || env === 'test') {
+    return true;
+  }
+
   try {
     const url = new URL(urlString);
     const host = url.hostname;

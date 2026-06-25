@@ -88,7 +88,6 @@ Content-Type: application/json
   "expiresAt": "2024-12-31T23:59:59Z"
 }
 ```
-
 **Response:**
 ```json
 {
@@ -111,7 +110,6 @@ Content-Type: application/json
 GET /api/v1/api-keys
 Authorization: Bearer <jwt-token>
 ```
-
 **Response:**
 ```json
 {
@@ -142,7 +140,6 @@ Authorization: Bearer <jwt-token>
 POST /api/v1/api-keys/:id/rotate
 Authorization: Bearer <jwt-token>
 ```
-
 **Response:**
 ```json
 {
@@ -166,7 +163,6 @@ Authorization: Bearer <jwt-token>
 DELETE /api/v1/api-keys/:id
 Authorization: Bearer <jwt-token>
 ```
-
 **Response:**
 ```json
 {
@@ -191,7 +187,7 @@ Authorization: Bearer <jwt-token>
 - Expired keys are automatically rejected
 - Expired keys are deactivated on first access attempt
 
-### Audit Trail
+## Audit Trail
 - Last usage timestamp is updated on successful authentication
 - Helps identify unused or suspicious keys
 - Useful for security monitoring and compliance
@@ -217,39 +213,50 @@ Authorization: Bearer <jwt-token>
 3. **Log usage** - Track which services use which keys
 4. **Use appropriate scope** - Request only necessary permissions
 
+## Lifecycle Overview
+
+1. **Creation** – A client calls the `POST /api/v1/api-keys` endpoint. The server generates a cryptographically random 32‑byte key, hashes it with a unique salt using PBKDF2, stores the `salt:hash` pair, and returns the **plain‑text key** **once** in the response. The plain key must be stored securely by the client; it is never persisted by the server.
+2. **Usage** – Clients include the key in the `X‑API‑Key` header on each request. The middleware extracts the header, verifies the key against the stored hash, updates `last_used_at`, and enforces any required scopes via `requireApiKeyScope`.
+3. **Expiration** – If an `expires_at` timestamp is set, the middleware rejects the key after that date, deactivates it on first use after expiry, and returns a 401 error.
+4. **Revocation** – A key can be deactivated at any time via `DELETE /api/v1/api-keys/:id`. The `is_active` flag is cleared, causing subsequent requests to be rejected with a 401.
+5. **Rotation** – To rotate a key, call `POST /api/v1/api-keys/:id/rotate`. A new plain‑text key is returned and the stored hash is replaced. The old key becomes immediately invalid. Update the consuming service's configuration with the new key, verify functionality, and optionally keep the old key for a short rollback window before fully deactivating it.
+
+## Scope Reference Table
+
+| Scope Pattern | Meaning |
+|---------------|---------|
+| `resource:action` | Grants exactly the specified action on the given resource (e.g., `contracts:read`). |
+| `resource:*` | Grants all actions on the specified resource (e.g., `contracts:*`). |
+| `*:action` | Grants the action on **any** resource (e.g., `*:read`). |
+| `*` | Grants full access; should only be used for admin keys. |
+
+> **Note:** Scopes are validated in `src/auth/apiKeyMiddleware.ts` and must match one of the above patterns.
+
+## Rotation Process Checklist
+
+- [ ] Call the rotate endpoint and capture the new plain‑text key.
+- [ ] Update the service configuration (env var, secret store) with the new key.
+- [ ] Deploy the updated configuration.
+- [ ] Verify that requests succeed with the new key.
+- [ ] Monitor logs for any authentication failures.
+- [ ] (Optional) Keep the old key active for a brief period to allow rollback, then deactivate it.
+
 ## Error Responses
 
 ### Authentication Errors
 ```json
-{
-  "error": "Missing X-API-Key header"
-}
+{ "error": "Missing X-API-Key header" }
 ```
-
 ```json
-{
-  "error": "Invalid API key"
-}
+{ "error": "Invalid API key" }
 ```
-
 ### Authorization Errors
 ```json
-{
-  "error": "Forbidden: insufficient API key scope",
-  "required": "contracts:read",
-  "provided": ["users:read"]
-}
+{ "error": "Forbidden: insufficient API key scope", "required": "contracts:read", "provided": ["users:read"] }
 ```
-
 ### Validation Errors
 ```json
-{
-  "error": "Invalid request body",
-  "required": {
-    "name": "string",
-    "scope": "string[]"
-  }
-}
+{ "error": "Invalid request body", "required": { "name": "string", "scope": "string[]" } }
 ```
 
 ## Implementation Details
@@ -285,15 +292,15 @@ import { authenticateApiKey, requireApiKeyScope } from './auth/apiKeyMiddleware'
 app.get('/api/internal', authenticateApiKey, handler);
 
 // API key with scope validation
-app.get('/api/contracts', 
-  authenticateApiKey, 
-  requireApiKeyScope('contracts', 'read'), 
+app.get('/api/contracts',
+  authenticateApiKey,
+  requireApiKeyScope('contracts', 'read'),
   handler
 );
 
 // Either JWT or API key
-app.get('/api/mixed', 
-  authenticateEither, 
+app.get('/api/mixed',
+  authenticateEither,
   handler
 );
 ```
@@ -301,39 +308,26 @@ app.get('/api/mixed',
 ## Migration Guide
 
 ### From JWT to API Keys
-1. Identify service-to-service communication
-2. Create API keys with appropriate scopes
-3. Update clients to use `X-API-Key` header
-4. Remove JWT authentication from service accounts
-5. Monitor and test the new authentication flow
+1. Identify service‑to‑service communication.
+2. Create API keys with appropriate scopes.
+3. Update clients to use `X-API-Key` header.
+4. Remove JWT authentication from service accounts.
+5. Monitor and test the new authentication flow.
 
 ### Key Rotation Process
-1. Generate new key using rotation endpoint
-2. Update service configuration with new key
-3. Test new key functionality
-4. Deploy updated configuration
-5. Monitor for any authentication failures
-6. Keep old key temporarily for rollback
+1. Generate new key using rotation endpoint.
+2. Update service configuration with new key.
+3. Test new key functionality.
+4. Deploy updated configuration.
+5. Monitor for any authentication failures.
+6. Keep old key temporarily for rollback.
 
 ## Troubleshooting
 
 ### Common Issues
-
-**Key not working**
-- Verify the key is copied correctly (no extra spaces)
-- Check if the key has expired
-- Ensure the key is still active
-- Verify the required scope matches the key's scope
-
-**Scope errors**
-- Check the exact scope format required
-- Ensure wildcards are used correctly
-- Verify the key has the necessary permissions
-
-**Performance issues**
-- Monitor key validation time
-- Consider database indexing for key lookups
-- Implement caching for frequently validated keys
+- **Key not working** – Verify the key is copied correctly (no extra spaces), check expiration, ensure the key is still active, and verify required scope matches.
+- **Scope errors** – Check exact scope format, ensure wildcards are used correctly, and verify the key has necessary permissions.
+- **Performance issues** – Monitor key validation time, consider database indexing for key lookups, and implement caching for frequently validated keys.
 
 ### Debug Information
 Enable debug logging to trace authentication flow:
@@ -345,8 +339,10 @@ console.log('API Key validation:', { keyId, scope, timestamp });
 ## Support
 
 For questions or issues with API key authentication:
-1. Check this documentation first
-2. Review the implementation examples
-3. Check the test files for usage patterns
-4. Review error messages for specific issues
-5. Contact the development team with detailed error information
+1. Check this documentation first.
+2. Review the implementation examples.
+3. Check the test files for usage patterns.
+4. Review error messages for specific issues.
+5. Contact the development team with detailed error information.
+
+[Authentication Details](../README.md#authentication)
